@@ -58,3 +58,20 @@ class CryptoBroker:
         except Exception as e:
             logger.error(f"Order Creation Failed for {symbol}: {str(e)}")
             return None
+
+    def fetch_historical_data(self, symbol: str, timeframe: str = '5m', limit: int = 100):
+        """
+        Fetches OHLCV data from the exchange.
+        Returns a list of lists: [ [timestamp, open, high, low, close, volume], ... ]
+        """
+        if not self.exchange: return None
+        
+        try:
+            # Note: CCXT uses string timeframes like '1m', '5m', '1h', '1d'
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            logger.info(f"Fetched {len(ohlcv)} historical candles for {symbol} at {timeframe}.")
+            return ohlcv
+        except Exception as e:
+            logger.error(f"Failed to fetch historical data for {symbol}: {str(e)}")
+            return None
+

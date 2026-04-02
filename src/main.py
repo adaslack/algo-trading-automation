@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.brokers.alice_blue_client import AliceBlueClient
 from src.brokers.ccxt_api import CryptoBroker
-from src.data.historical import format_alice_blue_historical
+from src.data.historical import format_alice_blue_historical, format_ccxt_historical
 from src.strategies.emas_crossover import EMACrossoverStrategy
 from src.execution.risk_manager import RiskManager
 from src.execution.order_router import OrderRouter
@@ -32,6 +32,7 @@ class TradingSystem:
         self.broker = AliceBlueClient()
         self.crypto_broker = CryptoBroker(exchange_id='binance')
         self.strategy = EMACrossoverStrategy(symbol="RELIANCE") # Example equity
+        self.crypto_strategy = EMACrossoverStrategy(symbol="BTC/USDT") # Example crypto
         self.risk_manager = None # Will instantiate after getting funds
         self.order_router = None
         self.is_connected = False
@@ -128,15 +129,32 @@ class TradingSystem:
             return
 
         try:
-            # Demonstration: Fetch ticker for a test crypto
-            symbol = 'BTC/USDT'
-            ticker = self.crypto_broker.exchange.fetch_ticker(symbol)
-            current_price = ticker.get('last')
-            logger.info(f"Crypto Tick - {symbol} Last Price: {current_price}")
+            symbol = self.crypto_strategy.symbol
             
-            # In the future, feed current_price and historicals to a strategy class here!
-            # Example: self.crypto_broker.place_market_order(symbol, 'buy', 0.001)
+            # 1. Fetch 5-minute OHLCV data (last 100 candles)
+            raw_ohlcv = self.crypto_broker.fetch_historical_data(symbol, timeframe='5m', limit=100)
             
+            # 2. Format to DataFrame
+            df = format_ccxt_historical(raw_ohlcv)
+            if df.empty:
+                logger.warning("Empty crypto dataframe received. Skipping.")
+                return
+                
+            current_price = df.iloc[-1]['close'] if 'close' in df.columns else 0
+            
+            # 3. Analyze Strategy
+            signal = self.crypto_strategy.analyze(df)
+            
+            # 4. Route Order (Simple integration without full risk_manager constraints for crypto demo)
+            if signal != 0 and current_price > 0:
+                side = 'buy' if signal == 1 else 'sell'
+                amount = 0.001 # Hardcoded for testing. Should be dynamic based on RiskManager.
+                logger.info(f"Crypto Signal ({side.upper()}) detected for {symbol}. Placing order...")
+                
+                self.crypto_broker.place_market_order(symbol, side, amount)
+            else:
+                 logger.info(f"Crypto Signal Hold for {symbol}.")
+                
         except Exception as e:
             logger.error(f"Error during crypto market cycle: {e}")
 

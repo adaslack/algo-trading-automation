@@ -39,3 +39,22 @@ def format_alice_blue_historical(raw_data):
     except Exception as e:
         logger.error(f"Error formatting raw data: {e}")
         return pd.DataFrame()
+
+def format_ccxt_historical(ohlcv_data):
+    """
+    Takes raw CCXT OHLCV data and converts it into a pandas DataFrame.
+    """
+    if not ohlcv_data:
+        logger.warning("No CCXT OHLCV data received.")
+        return pd.DataFrame()
+        
+    try:
+        df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        # CCXT timestamps are in milliseconds
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('datetime', inplace=True)
+        df.drop(columns=['timestamp'], inplace=True)
+        return df
+    except Exception as e:
+        logger.error(f"Error formatting CCXT data: {e}")
+        return pd.DataFrame()
