@@ -1,0 +1,10 @@
+schedule
+pytz
+python-dotenv
+ccxt
+ib_insync
+alice_blue
+pandas
+numpy
+backtrader
+scikit-learn
