@@ -10,6 +10,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.brokers.alice_blue_client import AliceBlueClient
+from src.brokers.ccxt_api import CryptoBroker
 from src.data.historical import format_alice_blue_historical
 from src.strategies.emas_crossover import EMACrossoverStrategy
 from src.execution.risk_manager import RiskManager
@@ -29,6 +30,7 @@ IST = pytz.timezone('Asia/Kolkata')
 class TradingSystem:
     def __init__(self):
         self.broker = AliceBlueClient()
+        self.crypto_broker = CryptoBroker(exchange_id='binance')
         self.strategy = EMACrossoverStrategy(symbol="RELIANCE") # Example equity
         self.risk_manager = None # Will instantiate after getting funds
         self.order_router = None
@@ -36,10 +38,15 @@ class TradingSystem:
 
     def initialize(self):
         try:
+            # Initialize Crypto Broker and Balance
+            if self.crypto_broker.exchange:
+                crypto_capital = self.crypto_broker.fetch_balance()
+                logger.info(f"Available Crypto Capital: {crypto_capital}")
+                
             self.broker.connect()
             self.is_connected = True
             
-            # Initialize capital and risk systems
+            # Initialize capital and risk systems for Indian Market
             capital = self.broker.get_funds()
             logger.info(f"Available Trading Capital: {capital}")
             
@@ -111,18 +118,43 @@ class TradingSystem:
         except Exception as e:
             logger.error(f"Error during market cycle: {e}")
 
+    def execute_crypto_cycle(self):
+        """
+        The cyclical function for 24/7 Crypto trading.
+        """
+        logger.info("Executing 24/7 Crypto Cycle...")
+        if getattr(self, 'crypto_broker', None) is None or not self.crypto_broker.exchange:
+            logger.warning("Crypto broker not initialized properly. Skipping cycle.")
+            return
+
+        try:
+            # Demonstration: Fetch ticker for a test crypto
+            symbol = 'BTC/USDT'
+            ticker = self.crypto_broker.exchange.fetch_ticker(symbol)
+            current_price = ticker.get('last')
+            logger.info(f"Crypto Tick - {symbol} Last Price: {current_price}")
+            
+            # In the future, feed current_price and historicals to a strategy class here!
+            # Example: self.crypto_broker.place_market_order(symbol, 'buy', 0.001)
+            
+        except Exception as e:
+            logger.error(f"Error during crypto market cycle: {e}")
 
 def main():
-    logger.info("Starting Global Trading Orchestrator for Indian Market...")
+    logger.info("Starting Global Trading Orchestrator (Indian Equities + Crypto)...")
     
     bot = TradingSystem()
     bot.initialize()
     
-    # Run cycle every 5 minutes
+    # Run Indian Equities cycle every 5 minutes (validates market hours internally)
     schedule.every(5).minutes.do(bot.execute_indian_market_cycle)
     
-    # Execute one immediately on start
+    # Run Crypto cycle every 15 minutes (runs 24/7 constantly)
+    schedule.every(15).minutes.do(bot.execute_crypto_cycle)
+    
+    # Execute one immediately on start to test logic
     bot.execute_indian_market_cycle()
+    bot.execute_crypto_cycle()
     
     logger.info("Scheduler Active. Bot is looping and monitoring...")
     
