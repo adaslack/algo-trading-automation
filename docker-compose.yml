@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Hot state cache and real-time pub/sub bus
+  redis:
+    image: redis:7-alpine
+    container_name: quant_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes # Ensure hot state is persisted to disk periodically
+
+  # Cold relational store for trade histories, configurations, and analytical reports
+  postgres:
+    image: postgres:15-alpine
+    container_name: quant_postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-trading_brain}
+      POSTGRES_USER: ${DB_USER:-quant_operator}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant_operator -d trading_brain"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:
+  postgres_data:
+

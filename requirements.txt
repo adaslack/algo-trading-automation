@@ -1,10 +1,36 @@
-schedule
-pytz
+# Core Trading
+alpaca-py
+yfinance
 python-dotenv
-ccxt
-ib_insync
-alice_blue
+
+# Data Science
 pandas
 numpy
-backtrader
+scipy
+statsmodels
+duckdb
+
+# AI / ML
 scikit-learn
+
+# Quantitative Finance
+arch
+
+
+# NLP / HTTP
+requests
+
+# Visualization
+matplotlib
+
+# Web Dashboard
+flask
+
+# Type Safety
+pydantic
+
+# Redis (Hot State)
+redis
+
+#PostgreSQL adapter library
+psycopg2-binary>=2.9.5
