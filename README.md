@@ -18,6 +18,7 @@ Rather than maintaining fragmented, retail-grade technical indicator strategies,
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    EVENT BUS (Redis Streams / event_bus.py)             │
 │            Lock-Free XADD/XREADGROUP, Load Balancing & WAL State Sync   │
+│            Fallback: 2-second failover to InMemoryBus ThreadPool        │
 │ ┌──────────────────────────────────┴──────────────────────────────────┐ │
 │ │ Local Storage: Columnar DuckDB  │ Production: High-Perf PostgreSQL │ │
 │ └──────────────────────────────────┬──────────────────────────────────┘ │
@@ -80,12 +81,12 @@ To prevent human coefficient engineering (e.g. legacy constant multipliers), the
 *   **Raw Factor Purging**: Removed all arbitrary scales. 
 *   **Online EMA Z-Scoring**: Raw factors are dynamically standardized to rolling $Z$-scores using Exponential Moving Average means and standard deviations.
 *   **Logistic Bounding**: The dynamic $Z$-scores are mapped onto a uniform risk-neutral $[-1.0, 1.0]$ space using a non-linear hyperbolic tangent ($\tanh$) transform.
-*   **Multiplicative GEX Dealer Hedging**: Replaced arbitrary additive alt-data scales with a mathematically sound multiplier modeling options market dealer hedging boundaries. Option GEX scales insider scores based on dealer positioning:
+*   **Multiplicative GEX Dealer Hedging**: Replaced arbitrary alt-data scales with a multiplier modeling options market dealer hedging boundaries. Option GEX scales insider scores based on dealer positioning:
     $$f_{\text{Alt}} = \text{insider\_score} \times (1.2 \text{ if short gamma [negative GEX] else } 0.8)$$
     Short-gamma environments amplify momentum moves, while long-gamma environments pin volatility and dampen flow impact.
 
 ### 2.2 Institutional Feature Lineage Registry
-To guarantee complete feature research lineage and prevent silent degradation, all core variables are tracked using an **Institutional Feature Lineage Registry** (`feature_lineage_registry.py`) integrated directly with `feature_store.py`:
+To guarantee complete feature research lineage and prevent silent degradation, all core variables are tracked using an **Feature Lineage Registry** (`feature_lineage_registry.py`) integrated directly with `feature_store.py`:
 *   **Lineage Metadata**: Stores feature versions (e.g. `2.1.0`), mathematical compute formulas, parameters, and rolling Spearman Information Coefficient (IC) statistics.
 *   **Live Drift Warnings**: Runs a two-sample Kolmogorov-Smirnov (KS) distribution drift test comparing training reference distributions against live inference values:
     $$D = \sup_x |F_{\text{ref}}(x) - F_{\text{live}}(x)|$$
@@ -120,18 +121,24 @@ Instead of hand-tuned heuristic weights, the platform implements empirical param
 
 Legacy rules are replaced with a closed-form Normal-Normal conjugate Bayesian model tracking posterior parameters ($\mu_n, \sigma_n$) coupled with recursive online shrinkage covariance.
 
+*   **Prior & Likelihood**:
+    $$\text{Prior: } \mu_0 \sim \mathcal{N}(\mu_0, \sigma_0^2) \quad \text{Likelihood: } r_t | \mu \sim \mathcal{N}(\mu, \sigma_{\text{obs}}^2)$$
+*   **Posterior Update**:
+    $$\sigma_n^2 = \frac{1}{\frac{1}{\sigma_{n-1}^2} + \frac{1}{\sigma_{\text{obs}}^2}} \quad \mu_n = \sigma_n^2 \left( \frac{\mu_{n-1}}{\sigma_{n-1}^2} + \frac{r_t}{\sigma_{\text{obs}}^2} \right)$$
 *   **Posterior Sizing Haircuts**: Raw Kelly leverage ($f^* = \mathbb{E}[r] / \sigma^2$) is dynamically scaled by posterior parameter uncertainty:
     $$f = f^* \times \left(1 - \frac{2\sigma_n}{|\mu_n|}\right)$$
     This ensures that when a strategy has high parameter uncertainty, it bets defensively, scaling up exposure automatically as empirical proof accumulates.
 *   **Ledoit-Wolf Bayesian Shrinkage & Online Covariance**: To account for asset correlation and joint sector exposure, the engine recursively estimates the covariance matrix:
-    $$\mathbf{\Sigma}_t = \alpha \mathbf{\Sigma}_{t-1} + (1 - \alpha) (\mathbf{x}_t - \boldsymbol{\mu}_t)(\mathbf{x}_t - \boldsymbol{\mu}_t)^T$$
+    $$\mathbf{\Sigma}_t = \alpha \mathbf{\Sigma}_t + (1 - \alpha) (\mathbf{x}_t - \boldsymbol{\mu}_t)(\mathbf{x}_t - \boldsymbol{\mu}_t)^T$$
     and applies Ledoit-Wolf diagonal target shrinkage to yield the positive-definite covariance matrix:
     $$\mathbf{\Sigma}_{\text{Shrink}} = \delta \mathbf{T}_t + (1 - \delta) \mathbf{\Sigma}_t$$
     Blending with shrinkage intensity $\delta = 0.5$ and regularizing with $\mathbf{I} \times 1\text{e-}6$ guarantees positive-definiteness and numerical stability.
 *   **Joint Bayesian Mean-Variance Allocation**: Optimal portfolio weights are computed via closed-form optimization:
     $$\mathbf{w}^* = \frac{1}{\gamma} \mathbf{\Sigma}_{\text{Shrink}}^{-1} \mathbb{E}[\mathbf{r}]$$
     where $\gamma$ is the risk aversion parameter (default `1.5`). Individual asset weights are bounded to a strict allocation cap of $[-10\%, +10\%]$ to prevent solo quant tail risk concentration.
-*   **Adaptive Online Learning**: Rolling trade returns are captured in real-time, executing Bayesian posterior updates on the portfolio singleton to ensure active drift adaptation.
+*   **Regime-Adaptive Capital Protection**: Incorporates dynamic risk aversion scaling and HMM panic regime exposure multipliers:
+    *   *Dynamic Risk Aversion:* Scales $\gamma$ up linearly as the average asset volatility rises.
+    *   *Panic Multiplier:* Scales down total portfolio exposure by up to 90% as the HMM panic state probability ($p_{\text{panic}}$) approaches 1.0.
 
 ---
 
@@ -167,7 +174,7 @@ Determines deterministic limit order fills by replaying Level 2 order book updat
 
 ## 9. SQLite-to-DuckDB Global Interception Layer
 
-Direct calls to `sqlite3.connect` are dynamically intercepted at the sys module boundary (`src/pipeline/__init__.py`) and routed transparently through high-performance **DuckDB Columnar Files** (`trading_brain.duckdb`) or local **PostgreSQL Connection Pools** (`db_adapter.py`). SQLite-specific syntax parameters (`AUTOINCREMENT`, `INSERT OR REPLACE / IGNORE`) are rewritten on-the-fly to support complete columnar multi-connection safety, resolving all lock contention bottlenecks in high-frequency trading hot paths.
+Direct calls to `sqlite3.connect` are dynamically intercepted at the sys module boundary (`src/pipeline/__init__.py`) and routed transparently through high-performance **DuckDB Columnar Files** (`trading_brain.duckdb`) or local **PostgreSQL Connection Pools** (`db_postgres.py`). SQLite-specific syntax parameters (`AUTOINCREMENT`, `INSERT OR REPLACE / IGNORE`) are rewritten on-the-fly to support complete columnar multi-connection safety, resolving all lock contention bottlenecks in high-frequency trading hot paths.
 
 ---
 
@@ -181,23 +188,20 @@ To match the hardware constraints of **Stage 1 solo quants (16GB RAM + 4 Cores)*
 
 ---
 
-## 11. V14 System Optimizations (Speed & Alpha Excellence)
+## 11. Centralized Risk Authority (RiskGate)
 
-To ensure the platform runs with maximum out-of-sample efficiency, zero-latency execution, and institutional protection, we implemented the following V14 optimizations:
-*   **Lookahead Bias Elimination**: Resolved lookahead bias in volatility regime calculations (`vol_regime`) inside `feature_store.py` by strictly enforcing exclusive bounds on indexing, aligning backtest and live feature paths.
-*   **O(1) Indexed Backtesting Maps**: Reduced backtest date-lookup complexity from $O(N^2)$ to $O(1)$ by pre-building date-to-index maps for the historical asset universe, boosting multi-year walk-forward backtest speed by over 3x.
-*   **Feature Caching & Screen De-duplication**: Integrated daily watchlist screening features with evaluates, caching calculated values to eliminate redundant daily processing.
-*   **HMM Cross-Ticker Isolation**: Eliminated potential parameter state leakage by forcing HMM regime probability priors to reset at the start of each daily execution batch.
-*   **Net-of-Cost Gated Signaling**: Factored local liquidity costs, bid-ask spreads, and capitalization slippages directly into `AlphaEngine.evaluate()` expected returns, preventing signals that fail to clear execution costs.
-*   **Asynchronous Event Ingestion**: Upgraded the event bus to leverage non-blocking thread pool dispatches for high-frequency `MARKET_UPDATE` topics, protecting socket ingest loops from downstream pipeline lock delays.
-*   **Drawdown Position Sizing Scaling**: Engineered drawdown-based risk haircuts inside `BayesianPortfolio` that linearly scale allocations down as current equity drawdowns deepen.
-*   **LRU Covariance Cache Eviction**: Capped memory utilization in Bayesian covariance tracking by implementing Least Recently Used (LRU) key pruning on running caches.
+All trade signals must pass through the centralized `RiskGate` authority before execution. Nothing runs without passing `RiskGate.approve()`, which applies:
+*   **Position Count Cap**: Rejects new buys if the number of active open positions exceeds `15`.
+*   **Sector Exposure Gate**: Restricts sector allocations to `< 25%` of the total portfolio positions.
+*   **Single-Asset Allocation Cap**: Limits Kelly allocations to a maximum of `5%` and enforces a minimum floor of `1%`.
+*   **Daily Trade Ceiling**: Restricts execution to a maximum of `20` trades per day.
+*   **Circuit Breakers**: Tripped immediately if daily portfolio drawdown exceeds `3%`.
 
 ---
 
 ## 12. V14 Machine Learning & Quantitative Alpha Upgrades (Alpha Excellence)
 
-The V14 release integrates a machine learning alpha overlay and advanced portfolio structuring tools:
+The V14 release integrates a machine learning alpha overlay, advanced feature orthogonalization, and sector-neutral pairs trading:
 *   **Cross-Sectional ML Ranker (`ml_ranker.py`)**: Deploys a Random Forest Regressor to forecast cross-sectional expected return percentiles across the active stock universe. It ingests momentum, reversal, realized volatility, volume breakout, sector relative strength, and rolling correlation/beta features to rank assets for long/short selection.
 *   **Meta-Labeling Classifier (`ml_ranker.py`)**: Implements a secondary Random Forest Classifier gating mechanism based on Marcos López de Prado's meta-labeling framework. It predicts the probability of success for a proposed signal based on execution costs, VIX, volume ratio, signal direction, and GARCH volatility, suppressing signals with a probability of success `< 55%`.
 *   **Meta-Learning Engine (`meta_learning.py`)**: Conducts recursive offline training loops to calibrate and update the ML models as historical trade outcome data accumulates in the database.
@@ -207,7 +211,17 @@ The V14 release integrates a machine learning alpha overlay and advanced portfol
 
 ---
 
-## 13. Testing & Verification
+## 13. V14 System Optimizations (Speed & Latency Reductions)
+
+*   **Low-Latency Event Bus Fallback**: Added a connection timeout (`socket_connect_timeout=2.0`, `socket_timeout=2.0`) to the Redis Streams publisher. If local Redis is unavailable, the system automatically falls back to a high-speed In-Memory event bus within 2 seconds.
+*   **Consolidated DB Queries**: Reduced database transaction locks by consolidation. For instance, the `RiskManager` fetches all asset features, market values, and sector listings in a single SQL query instead of multiple serial transactions.
+*   **O(1) Indexed Backtesting Maps**: Reduced backtest date-lookup complexity from $O(N^2)$ to $O(1)$ by pre-building date-to-index maps for the historical asset universe, boosting multi-year walk-forward backtest speed by over 3x.
+*   **HMM Cross-Ticker Isolation**: Resetting HMM regime state variables daily to prevent parameter drift and data leakage between ticker loops.
+*   **LRU Covariance Cache Eviction**: Capped memory utilization in Bayesian covariance tracking by implementing Least Recently Used (LRU) key pruning on running covariance caches.
+
+---
+
+## 14. Testing & Verification
 
 The platform enforces absolute mathematical and code correctness via four automated regression testing suites:
 
