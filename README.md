@@ -20,7 +20,7 @@ Rather than maintaining fragmented, retail-grade technical indicator strategies,
 │            Lock-Free XADD/XREADGROUP, Load Balancing & WAL State Sync   │
 │            Fallback: 2-second failover to InMemoryBus ThreadPool        │
 │ ┌──────────────────────────────────┴──────────────────────────────────┐ │
-│ │ Local Storage: Columnar DuckDB  │ Production: High-Perf PostgreSQL │ │
+│ │ Local Storage: Columnar DuckDB  │ Production: High-Perf PostgreSQL  │ │
 │ └──────────────────────────────────┬──────────────────────────────────┘ │
 └────────────────────────────────────┼────────────────────────────────────┘
                                      │
@@ -29,28 +29,28 @@ Rather than maintaining fragmented, retail-grade technical indicator strategies,
 │             UNIFIED PROBABILISTIC EXPECTED RETURN ENGINE                │
 │                         (alpha_engine.py)                               │
 │  Informed Flow (VPIN) · Demand Pressure (OBI) · Latent Fair-Value Spread│
-│ └────────────────────────────────────┬────────────────────────────────────┘
-│                                      │ Continuous E[r] Vector
-│                                      ▼
-│ ┌─────────────────────────────────────────────────────────────────────────┐
-│ │               CENTRALIZED BAYESIAN PORTFOLIO ENGINE                     │
-│ │                            (portfolio.py)                               │
-│ │    Conjugate Normal-Normal Posteriors · Dynamic Uncertainty Haircuts    │
-│ └────────────────────────────────────┬────────────────────────────────────┘
-│                                      │ Portfolio Sizing / Allocations
-│                                      ▼
-│ ┌─────────────────────────────────────────────────────────────────────────┐
-│ │                       CENTRALIZED RISK AUTHORITY                        │
-│ │                           (risk_manager.py)                             │
-│ │       Capacity Controls · Correlation-Distance Filters · VaR Gates      │
-│ └────────────────────────────────────┬────────────────────────────────────┘
-│                                      │ approved execution
-│                                      ▼
-│ ┌─────────────────────────────────────────────────────────────────────────┐
-│ │                   TRUE ALPHA LIFECYCLE MANAGEMENT                      │
-│ │                           (research_core.py)                            │
-│ │     Cemetery Retirement · Live IC Decay · Live-vs-Backtest Drift        │
-│ └─────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────┬─────────────────────────────────────┘
+                                    │ Continuous E[r] Vector
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│               CENTRALIZED BAYESIAN PORTFOLIO ENGINE                     │
+│                            (portfolio.py)                               │
+│    Conjugate Normal-Normal Posteriors · Dynamic Uncertainty Haircuts    │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │ Portfolio Sizing / Allocations
+                                     ▼
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                       CENTRALIZED RISK AUTHORITY                        │
+ │                           (risk_manager.py)                             │
+ │       Capacity Controls · Correlation-Distance Filters · VaR Gates      │
+ └────────────────────────────────────┬────────────────────────────────────┘
+                                      │ approved execution
+                                      ▼
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                   TRUE ALPHA LIFECYCLE MANAGEMENT                       │
+ │                           (research_core.py)                            │
+ │     Cemetery Retirement · Live IC Decay · Live-vs-Backtest Drift        │
+ └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
