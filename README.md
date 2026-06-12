@@ -1,4 +1,4 @@
-# Institutional Quantitative Systematic Platform (V13 Upgrades)
+# Institutional Quantitative Systematic Platform (V14 Upgrades)
 ### ⚖️ Real Predictive Expected Return Surfaces & Bayesian Allocation Engine
 
 An autonomous, institutional-grade quantitative research and systematic execution platform for **US equities**. Engineered around academically-validated technical alpha factors, dynamic expected return surfaces, deterministic order book replay, a rigorous anti-overfitting statistical defense court, and dynamic execution capacity optimization.
@@ -181,9 +181,9 @@ To match the hardware constraints of **Stage 1 solo quants (16GB RAM + 4 Cores)*
 
 ---
 
-## 11. V13 System Optimizations (Speed & Alpha Excellence)
+## 11. V14 System Optimizations (Speed & Alpha Excellence)
 
-To ensure the platform runs with maximum out-of-sample efficiency, zero-latency execution, and institutional protection, we implemented the following V13 optimizations:
+To ensure the platform runs with maximum out-of-sample efficiency, zero-latency execution, and institutional protection, we implemented the following V14 optimizations:
 *   **Lookahead Bias Elimination**: Resolved lookahead bias in volatility regime calculations (`vol_regime`) inside `feature_store.py` by strictly enforcing exclusive bounds on indexing, aligning backtest and live feature paths.
 *   **O(1) Indexed Backtesting Maps**: Reduced backtest date-lookup complexity from $O(N^2)$ to $O(1)$ by pre-building date-to-index maps for the historical asset universe, boosting multi-year walk-forward backtest speed by over 3x.
 *   **Feature Caching & Screen De-duplication**: Integrated daily watchlist screening features with evaluates, caching calculated values to eliminate redundant daily processing.
@@ -195,7 +195,19 @@ To ensure the platform runs with maximum out-of-sample efficiency, zero-latency 
 
 ---
 
-## 12. Testing & Verification
+## 12. V14 Machine Learning & Quantitative Alpha Upgrades (Alpha Excellence)
+
+The V14 release integrates a machine learning alpha overlay and advanced portfolio structuring tools:
+*   **Cross-Sectional ML Ranker (`ml_ranker.py`)**: Deploys a Random Forest Regressor to forecast cross-sectional expected return percentiles across the active stock universe. It ingests momentum, reversal, realized volatility, volume breakout, sector relative strength, and rolling correlation/beta features to rank assets for long/short selection.
+*   **Meta-Labeling Classifier (`ml_ranker.py`)**: Implements a secondary Random Forest Classifier gating mechanism based on Marcos López de Prado's meta-labeling framework. It predicts the probability of success for a proposed signal based on execution costs, VIX, volume ratio, signal direction, and GARCH volatility, suppressing signals with a probability of success `< 55%`.
+*   **Meta-Learning Engine (`meta_learning.py`)**: Conducts recursive offline training loops to calibrate and update the ML models as historical trade outcome data accumulates in the database.
+*   **Walk-Forward ML Validator (`ml_validator.py`)**: Enforces out-of-sample walk-forward validation and parameter auditing to prevent model overfitting.
+*   **Factor Residualizer (`feature_store.py`)**: Performs cross-sectional ordinary least squares (OLS) regressions against sector averages and SPY beta to extract pure idiosyncratic alpha residuals, eliminating sector and market correlation concentration.
+*   **Sector-Neutral Pairs Trading (`cross_sectional_ranker.py`)**: Groups features by sector, evaluates residual expected returns, and initiates sector-neutral long/short pairs to capture relative value within each sector tier.
+
+---
+
+## 13. Testing & Verification
 
 The platform enforces absolute mathematical and code correctness via four automated regression testing suites:
 
