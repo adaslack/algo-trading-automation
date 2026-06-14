@@ -131,14 +131,7 @@ class RedisBus:
     def __init__(self, host: str = 'localhost', port: int = 6379, db: int = 0):
         try:
             import redis
-            self._redis = redis.Redis(
-                host=host,
-                port=port,
-                db=db,
-                decode_responses=True,
-                socket_connect_timeout=2.0,
-                socket_timeout=2.0
-            )
+            self._redis = redis.Redis(host=host, port=port, db=db, decode_responses=True)
             self._redis.ping()
             self._handlers: dict[str, list[Callable]] = defaultdict(list)
             self._consumer_group = "quant_group"
@@ -276,4 +269,3 @@ class Topics:
     CIRCUIT_BREAKER = "risk.circuit_breaker"
     PORTFOLIO_UPDATE = "portfolio.update"
     STRATEGY_REBALANCE = "strategy.rebalance"
-

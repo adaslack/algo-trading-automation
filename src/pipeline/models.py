@@ -63,15 +63,7 @@ class MarketEvent(BaseModel):
     sector: str = ""
     timestamp: datetime = Field(default_factory=datetime.now)
 
-    # Technical/Microstructure Indicators (optional, populated by Wheel 1)
-    vwap: Optional[float] = None
-    hurst: Optional[float] = None
     garch_vol: Optional[float] = None
-    vpin: Optional[float] = None
-    obi: Optional[float] = None
-    micro_price: Optional[float] = None
-    dealer_gex: Optional[float] = None
-    insider_score: Optional[float] = None
 
 
 # ========== SIGNALS ==========
@@ -261,4 +253,3 @@ class PairSignal(BaseModel):
     spread: float = 0.0
     hedge_ratio: float = 1.0
     timestamp: datetime = Field(default_factory=datetime.now)
-

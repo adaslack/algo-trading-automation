@@ -41,29 +41,28 @@ class TestMicrostructureEngine(unittest.TestCase):
         self.cursor.execute("DELETE FROM options_queue")
         self.conn.commit()
         
-        # Clean PostgreSQL tables as well if psycopg2 is installed and DB_HOST is configured
-        if os.getenv("DB_HOST"):
-            try:
-                import psycopg2
-                pg_conn = psycopg2.connect(
-                    dbname="trading_brain",
-                    user="postgres",
-                    password="password",
-                    host="localhost",
-                    port="5432"
-                )
-                pg_cursor = pg_conn.cursor()
-                pg_cursor.execute("TRUNCATE TABLE daily_watchlist CASCADE;")
-                pg_cursor.execute("TRUNCATE TABLE market_data CASCADE;")
-                pg_cursor.execute("TRUNCATE TABLE trade_history CASCADE;")
-                pg_cursor.execute("TRUNCATE TABLE strategy_performance CASCADE;")
-                pg_cursor.execute("TRUNCATE TABLE circuit_breaker CASCADE;")
-                pg_cursor.execute("TRUNCATE TABLE options_queue CASCADE;")
-                pg_conn.commit()
-                pg_cursor.close()
-                pg_conn.close()
-            except Exception:
-                pass
+        # Clean PostgreSQL tables as well if psycopg2 is installed and active
+        try:
+            import psycopg2
+            pg_conn = psycopg2.connect(
+                dbname="trading_brain",
+                user="postgres",
+                password="password",
+                host="localhost",
+                port="5432"
+            )
+            pg_cursor = pg_conn.cursor()
+            pg_cursor.execute("TRUNCATE TABLE daily_watchlist CASCADE;")
+            pg_cursor.execute("TRUNCATE TABLE market_data CASCADE;")
+            pg_cursor.execute("TRUNCATE TABLE trade_history CASCADE;")
+            pg_cursor.execute("TRUNCATE TABLE strategy_performance CASCADE;")
+            pg_cursor.execute("TRUNCATE TABLE circuit_breaker CASCADE;")
+            pg_cursor.execute("TRUNCATE TABLE options_queue CASCADE;")
+            pg_conn.commit()
+            pg_cursor.close()
+            pg_conn.close()
+        except Exception:
+            pass
         
     def tearDown(self):
         self.conn.close()
@@ -272,4 +271,3 @@ class TestMicrostructureEngine(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

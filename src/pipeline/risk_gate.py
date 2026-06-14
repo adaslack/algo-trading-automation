@@ -206,4 +206,3 @@ class RiskGate:
         except Exception as e:
             log.error(f"Circuit breaker state fetch failed: {e}")
         return CircuitBreakerState()
-

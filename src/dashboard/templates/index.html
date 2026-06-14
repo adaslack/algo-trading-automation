@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Institutional Trading Terminal | V7</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --glass-bg: rgba(20, 25, 40, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --neon-blue: #00f0ff;
+            --neon-green: #00ff88;
+            --neon-red: #ff3366;
+            --neon-purple: #b026ff;
+            --text-main: #f0f4f8;
+            --text-dim: #8a9bb2;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(0, 240, 255, 0.05), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(176, 38, 255, 0.05), transparent 25%);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 2rem;
+            min-height: 100vh;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 1rem;
+        }
+
+        .header h1 {
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: -0.05em;
+            background: linear-gradient(90deg, var(--text-main), var(--text-dim));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            background: rgba(0, 255, 136, 0.1);
+            color: var(--neon-green);
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            border: 1px solid rgba(0, 255, 136, 0.2);
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: var(--neon-green);
+            border-radius: 50%;
+            margin-right: 8px;
+            box-shadow: 0 0 8px var(--neon-green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 1.5rem;
+        }
+
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .glass-panel:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.4);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .panel-title {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-dim);
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+        }
+
+        /* Span 4 columns */
+        .regime-panel { grid-column: span 4; }
+        .risk-panel { grid-column: span 8; }
+        .positions-panel { grid-column: span 8; }
+        .weights-panel { grid-column: span 4; }
+
+        .big-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            margin: 0.5rem 0;
+            text-shadow: 0 0 20px rgba(255,255,255,0.1);
+        }
+
+        .positive { color: var(--neon-green); text-shadow: 0 0 10px rgba(0,255,136,0.4); }
+        .negative { color: var(--neon-red); text-shadow: 0 0 10px rgba(255,51,102,0.4); }
+        .neutral { color: var(--neon-blue); text-shadow: 0 0 10px rgba(0,240,255,0.4); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        th {
+            text-align: left;
+            color: var(--text-dim);
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--glass-border);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            padding: 1rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .weight-bar-bg {
+            background: rgba(255,255,255,0.05);
+            height: 6px;
+            border-radius: 3px;
+            width: 100%;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+
+        .weight-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--neon-purple), var(--neon-blue));
+            border-radius: 3px;
+            box-shadow: 0 0 10px var(--neon-blue);
+        }
+
+        .factor-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        .factor-item {
+            background: rgba(0,0,0,0.2);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .factor-label {
+            color: var(--text-dim);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            margin-bottom: 0.5rem;
+        }
+
+        .factor-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>V7 QUANT TERMINAL</h1>
+        <div class="status-badge">SYSTEM LIVE</div>
+    </div>
+
+    <div class="grid">
+        <!-- Regime Panel -->
+        <div class="glass-panel regime-panel">
+            <h3 class="panel-title">HMM Market Regime</h3>
+            <div id="regime-state" class="big-value neutral">Loading...</div>
+            <div style="margin-top: 1rem; display: flex; justify-content: space-between; color: var(--text-dim); font-size: 0.85rem;">
+                <div>Bull: <span id="prob-bull">0</span>%</div>
+                <div>Bear: <span id="prob-bear">0</span>%</div>
+                <div>Vol: <span id="prob-vol">0</span>%</div>
+            </div>
+        </div>
+
+        <!-- Risk Panel -->
+        <div class="glass-panel risk-panel">
+            <h3 class="panel-title">Portfolio Risk & Fama-French Factor Exposure</h3>
+            <div style="display: flex; gap: 2rem; align-items: center; margin-bottom: 1.5rem;">
+                <div>
+                    <div class="factor-label">Monte Carlo VaR (95%)</div>
+                    <div id="var-value" class="big-value negative">0.00%</div>
+                </div>
+                <div>
+                    <div class="factor-label">Residual Alpha (Daily)</div>
+                    <div id="alpha-value" class="big-value positive">0.00%</div>
+                </div>
+            </div>
+            
+            <div class="factor-grid">
+                <div class="factor-item">
+                    <div class="factor-label">Market (Beta)</div>
+                    <div id="f-market" class="factor-val">0.00</div>
+                </div>
+                <div class="factor-item">
+                    <div class="factor-label">Size (SMB)</div>
+                    <div id="f-size" class="factor-val">0.00</div>
+                </div>
+                <div class="factor-item">
+                    <div class="factor-label">Value (HML)</div>
+                    <div id="f-value" class="factor-val">0.00</div>
+                </div>
+                <div class="factor-item">
+                    <div class="factor-label">Momentum</div>
+                    <div id="f-mom" class="factor-val">0.00</div>
+                </div>
+                <div class="factor-item">
+                    <div class="factor-label">Quality</div>
+                    <div id="f-qual" class="factor-val">0.00</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Positions Panel -->
+        <div class="glass-panel positions-panel">
+            <h3 class="panel-title">Active Positions (Trade History)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset</th>
+                        <th>Entry Date</th>
+                        <th>Strategy</th>
+                        <th>Hold Time</th>
+                        <th>Net PnL</th>
+                    </tr>
+                </thead>
+                <tbody id="positions-body">
+                    <tr><td colspan="5" style="text-align:center; color: var(--text-dim);">Loading active positions...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Weights Panel -->
+        <div class="glass-panel weights-panel">
+            <h3 class="panel-title">AI Strategy Allocations</h3>
+            <div id="weights-body" style="display: flex; flex-direction: column; gap: 1rem;">
+                <div style="text-align:center; color: var(--text-dim);">Loading meta-learning weights...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateDashboard() {
+            fetch('/api/data')
+                .then(r => r.json())
+                .then(data => {
+                    if(data.status !== 'success') return;
+
+                    // Regime
+                    const reg = data.regime.current_regime;
+                    const elRegime = document.getElementById('regime-state');
+                    elRegime.textContent = reg;
+                    elRegime.className = 'big-value ' + (reg === 'Bull' ? 'positive' : reg === 'Bear' ? 'negative' : 'neutral');
+                    
+                    document.getElementById('prob-bull').textContent = (data.regime.bull_prob * 100).toFixed(1);
+                    document.getElementById('prob-bear').textContent = (data.regime.bear_prob * 100).toFixed(1);
+                    document.getElementById('prob-vol').textContent = (data.regime.high_vol_prob * 100).toFixed(1);
+
+                    // Risk & Factors
+                    document.getElementById('var-value').textContent = (data.risk.var_95 * 100).toFixed(2) + '%';
+                    
+                    const alpha = (data.risk.residual_alpha || 0) * 100;
+                    const elAlpha = document.getElementById('alpha-value');
+                    elAlpha.textContent = (alpha > 0 ? '+' : '') + alpha.toFixed(2) + '%';
+                    elAlpha.className = 'big-value ' + (alpha >= 0 ? 'positive' : 'negative');
+
+                    document.getElementById('f-market').textContent = (data.risk.factor_market || 0).toFixed(2);
+                    document.getElementById('f-size').textContent = (data.risk.factor_size || 0).toFixed(2);
+                    document.getElementById('f-value').textContent = (data.risk.factor_value || 0).toFixed(2);
+                    document.getElementById('f-mom').textContent = (data.risk.factor_momentum || 0).toFixed(2);
+                    document.getElementById('f-qual').textContent = (data.risk.factor_quality || 0).toFixed(2);
+
+                    // Positions
+                    const tbody = document.getElementById('positions-body');
+                    tbody.innerHTML = '';
+                    if(data.positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color: var(--text-dim);">No active positions.</td></tr>';
+                    } else {
+                        data.positions.forEach(p => {
+                            const pnl = p.pnl_pct * 100;
+                            const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+                            const pnlSign = pnl > 0 ? '+' : '';
+                            
+                            tbody.innerHTML += `
+                                <tr>
+                                    <td><strong>${p.ticker}</strong></td>
+                                    <td style="color: var(--text-dim);">${p.entry_date.split('T')[0]}</td>
+                                    <td style="font-family: 'Inter'; font-size: 0.8rem;">${p.strategy}</td>
+                                    <td>${p.holding_days}d</td>
+                                    <td class="${pnlClass}">${pnlSign}${pnl.toFixed(2)}%</td>
+                                </tr>
+                            `;
+                        });
+                    }
+
+                    // Weights
+                    const wbody = document.getElementById('weights-body');
+                    wbody.innerHTML = '';
+                    // Sort descending and take top 8
+                    data.weights.sort((a,b) => b.weight - a.weight).slice(0,8).forEach(w => {
+                        const pct = (w.weight * 100).toFixed(1);
+                        wbody.innerHTML += `
+                            <div>
+                                <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 2px;">
+                                    <span style="font-family: 'Inter';">${w.strategy}</span>
+                                    <span class="positive">${pct}%</span>
+                                </div>
+                                <div class="weight-bar-bg">
+                                    <div class="weight-bar-fill" style="width: ${pct}%"></div>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                })
+                .catch(console.error);
+        }
+
+        // Poll every 5 seconds
+        setInterval(updateDashboard, 5000);
+        updateDashboard();
+    </script>
+</body>
+</html>

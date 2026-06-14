@@ -173,4 +173,3 @@ _registry = FeatureLineageRegistry()
 
 def get_registry() -> FeatureLineageRegistry:
     return _registry
-

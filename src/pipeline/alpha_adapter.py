@@ -214,4 +214,3 @@ def run_alpha_adapter():
 
 if __name__ == '__main__':
     run_alpha_adapter()
-

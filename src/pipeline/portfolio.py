@@ -424,11 +424,15 @@ class BayesianPortfolio:
         cov_shrink += np.eye(N) * 1e-6
         
         # Bayesian Mean-Variance Optimization: w* = (1/gamma) * inv(Cov) * E[r]
-        # Noise Filtering: Use continuous expected returns to prevent step-function portfolio chattering
+        # Noise Filtering: Use continuous expected returns, but only allow active E[r] if there is a signal
         er_list = []
         for o in alpha_outputs:
             if o.ticker in returns_dict:
-                er_list.append(o.expected_return)
+                # Signal Gating: if there is no high-conviction buy/sell signal, treat expected return as 0.0 to prevent trading neutral assets
+                if o.signal is not None:
+                    er_list.append(o.expected_return)
+                else:
+                    er_list.append(0.0)
         er = np.array(er_list, dtype=float)
 
         
@@ -446,9 +450,71 @@ class BayesianPortfolio:
         except Exception:
             raw_weights = er * 0.1
 
-            
+        # ── V15 MATHEMATICAL PORTFOLIO NEUTRALITY PROJECTIONS ────────────────
+        # Load sector mappings from market_data DB table
+        sectors = {}
+        try:
+            import sqlite3
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            c = conn.cursor()
+            c.execute("SELECT ticker, sector FROM market_data")
+            for row in c.fetchall():
+                sectors[row[0]] = row[1] or 'Unknown'
+            conn.close()
+        except Exception as ex:
+            log.warning(f"Could not load sector mappings from DB: {ex}")
+
+        # Compute dynamic rolling beta for all assets against watchlist mean proxy
+        spy_rets = None
+        if 'SPY' in price_history:
+            spy_prices = np.array(price_history['SPY'], dtype=float)
+            if len(spy_prices) > 2:
+                spy_rets = np.diff(np.log(spy_prices + 1e-9))
+        
+        if spy_rets is None:
+            all_rets = list(returns_dict.values())
+            if all_rets:
+                spy_rets = np.mean(all_rets, axis=0)
+
+        betas = {}
+        for t in tickers:
+            if t in returns_dict and spy_rets is not None and len(spy_rets) == len(returns_dict[t]):
+                cov_val = np.cov(returns_dict[t], spy_rets)
+                var_spy = np.var(spy_rets)
+                betas[t] = cov_val[0, 1] / (var_spy + 1e-9)
+            else:
+                betas[t] = 1.0
+
+        # Construct linear constraint matrix A of shape (M, N)
+        # s.t. A * w = 0 (Dollar, Beta, and Sector neutrality)
+        A_rows = []
+        # 1. Dollar Neutrality: Sum(w_i) = 0
+        A_rows.append(np.ones(N))
+        # 2. Beta Neutrality: Sum(w_i * beta_i) = 0
+        A_rows.append(np.array([betas.get(t, 1.0) for t in tickers]))
+        # 3. Sector Neutrality: Sum(w_i in sector_k) = 0 for each unique sector
+        unique_sectors = list(set(sectors.get(t, 'Unknown') for t in tickers))
+        for sec in unique_sectors:
+            if sec == 'Unknown' or sec == 'Market':
+                continue
+            row = np.array([1.0 if sectors.get(t, 'Unknown') == sec else 0.0 for t in tickers])
+            if np.sum(row) > 0 and not np.all(row == 1.0):
+                A_rows.append(row)
+
+        A = np.array(A_rows)
+        
+        # Project raw weights onto the constraint subspace nullspace:
+        # w_proj = (I - A^T * (A * A^T)^+ * A) * w_raw
+        if N > 1 and len(A) > 0:
+            try:
+                A_t = A.T
+                proj_matrix = np.eye(N) - A_t.dot(np.linalg.pinv(A.dot(A_t))).dot(A)
+                raw_weights = proj_matrix.dot(raw_weights)
+            except Exception as ex:
+                log.error(f"Error during analytical portfolio projection: {ex}")
+
         allocated_weights = {}
-        kappa = 0.25  # Dynamic update rate: responsive adjustments (25% update per period)
+        kappa = 0.25  # Dynamic update rate: responsive adjustments
         
         # HMM Panic Regime Capital Protection: contract exposure up to 90% in panic states
         try:
@@ -466,12 +532,39 @@ class BayesianPortfolio:
             
             # Retrieve previous weight to penalize turnover
             w_prev = self._prev_weights.get(t, 0.0)
-            w_smoothed = (1.0 - kappa) * w_prev + kappa * w_clipped
+            
+            # Rebalancing Band: if the absolute target change is smaller than 2.0%,
+            # and we are not trying to exit (target is not 0.0), keep the previous weight intact to save slippage costs!
+            if abs(w_clipped - w_prev) < 0.020 and abs(w_clipped) > 1e-4:
+                w_smoothed = w_prev
+            else:
+                w_smoothed = (1.0 - kappa) * w_prev + kappa * w_clipped
             
             w_final = float(np.clip(w_smoothed * exposure_multiplier, -0.10, 0.10))
-            allocated_weights[t] = round(w_final, 4)
+            allocated_weights[t] = w_final
             self._prev_weights[t] = w_final
-            
+
+        # Enforce exact final projection safety net to guarantee 100% compliance
+        final_w = np.array([allocated_weights.get(t, 0.0) for t in tickers])
+        if len(A) > 0 and len(tickers) > 1:
+            try:
+                A_t = A.T
+                proj_matrix = np.eye(N) - A_t.dot(np.linalg.pinv(A.dot(A_t))).dot(A)
+                final_w = proj_matrix.dot(final_w)
+                
+                # Rescale to target gross exposure (exposure multiplier)
+                target_gross = float(exposure_multiplier)
+                current_gross = np.sum(np.abs(final_w))
+                if current_gross > 1e-6:
+                    final_w = final_w * (target_gross / current_gross)
+                
+                for i, t in enumerate(tickers):
+                    w_val = float(np.clip(final_w[i], -0.15, 0.15))
+                    allocated_weights[t] = round(w_val, 4)
+                    self._prev_weights[t] = w_val
+            except Exception as ex:
+                log.error(f"Error in final portfolio projection safety net: {ex}")
+
         # Orderly, gradual liquidations for assets dropped from the watchlist
         for t in list(self._prev_weights.keys()):
             if t not in tickers:
@@ -593,4 +686,3 @@ _portfolio = BayesianPortfolio()
 def get_portfolio() -> BayesianPortfolio:
     """Return the module-level singleton BayesianPortfolio."""
     return _portfolio
-

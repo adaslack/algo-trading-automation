@@ -308,8 +308,24 @@ def main():
     
     print("\n--- Starting Walk-Forward Historical Simulation Loop ---")
     
-    for day in backtest_days:
+    for idx, day in enumerate(backtest_days):
         print(f"\n📅 [TRADE DATE] {day}")
+        
+        # V15 dynamic walk-forward monthly retraining loop (every 20 trading days)
+        if idx > 0 and idx % 20 == 0:
+            print(f"🔄 [MONTHLY RETRAINING GATE] Retraining ML Models walk-forward up to {day}...")
+            try:
+                from ml_ranker import build_and_train_models
+                ranker, meta_model = build_and_train_models(
+                    ticker_arrays=ticker_arrays,
+                    ticker_metadata=ticker_metadata,
+                    end_date_str=day
+                )
+                engine.ml_ranker = ranker
+                engine.meta_labeler = meta_model
+                print("✅ ML Models successfully retrained walk-forward!")
+            except Exception as e:
+                print(f"⚠️ Failed to retrain ML Models: {e}. Keeping current models.")
         
         # Reset HMM regime state per day to prevent cross-ticker leakage
         engine._regime_probs = _default_regime_probs.copy()
@@ -509,4 +525,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

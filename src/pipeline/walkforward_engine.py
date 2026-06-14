@@ -102,4 +102,3 @@ _walkforward_engine = WalkForwardEngine()
 
 def get_walkforward_engine() -> WalkForwardEngine:
     return _walkforward_engine
-

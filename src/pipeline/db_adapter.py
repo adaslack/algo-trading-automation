@@ -59,4 +59,3 @@ def execute_query(query: str, params: tuple = None, fetch: bool = False, commit:
         finally:
             cursor.close()
             conn.close()
-

@@ -50,9 +50,7 @@ def setup_database_postgres():
                 reversal_5d DOUBLE PRECISION,
                 volume_breakout DOUBLE PRECISION,
                 vol_regime DOUBLE PRECISION,
-                trend_strength DOUBLE PRECISION,
-                atr14 DOUBLE PRECISION,
-                volatility_20d DOUBLE PRECISION
+                trend_strength DOUBLE PRECISION
             )
         ''')
 
@@ -62,9 +60,7 @@ def setup_database_postgres():
             ('reversal_5d', 'DOUBLE PRECISION'),
             ('volume_breakout', 'DOUBLE PRECISION'),
             ('vol_regime', 'DOUBLE PRECISION'),
-            ('trend_strength', 'DOUBLE PRECISION'),
-            ('atr14', 'DOUBLE PRECISION'),
-            ('volatility_20d', 'DOUBLE PRECISION')
+            ('trend_strength', 'DOUBLE PRECISION')
         ]
         for col_name, col_type in new_cols_pg:
             try:
@@ -408,9 +404,7 @@ def setup_database_sqlite():
             reversal_5d REAL,
             volume_breakout REAL,
             vol_regime REAL,
-            trend_strength REAL,
-            atr14 REAL,
-            volatility_20d REAL
+            trend_strength REAL
         )
     ''')
 
@@ -643,7 +637,7 @@ def setup_database_sqlite():
     ''')
 
     # Run V13 real predictive features migration on SQLite and DuckDB
-    new_cols_lt = ['momentum_12_1', 'reversal_5d', 'volume_breakout', 'vol_regime', 'trend_strength', 'atr14', 'volatility_20d']
+    new_cols_lt = ['momentum_12_1', 'reversal_5d', 'volume_breakout', 'vol_regime', 'trend_strength']
     for col in new_cols_lt:
         # SQLite migration
         try:
@@ -676,4 +670,3 @@ def setup_database():
 
 if __name__ == '__main__':
     setup_database()
-

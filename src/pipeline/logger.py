@@ -19,7 +19,6 @@ for stream in (sys.stdout, sys.stderr):
 
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'logs', 'pipeline.log')
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 def get_logger(wheel_name):
     """
@@ -58,4 +57,3 @@ def get_logger(wheel_name):
     logger.addHandler(ch)
     
     return logger
-

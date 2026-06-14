@@ -61,9 +61,8 @@ def fetch_latest_market_data(tickers: list) -> dict:
         c = conn.cursor()
         placeholders = ', '.join(['?'] * len(tickers))
         c.execute(f'''
-            SELECT ticker, close_price, sector, vpin, obi, micro_price, dealer_gex,
-                   insider_score, garch_volatility, volume_ratio, hurst_exponent, vwap,
-                   momentum_12_1, reversal_5d, volume_breakout, vol_regime, trend_strength
+            SELECT ticker, close_price, sector, garch_volatility, volume_ratio,
+                   momentum_12_1, reversal_5d, vol_regime, vpin, obi, micro_price, dealer_gex, insider_score
             FROM market_data WHERE ticker IN ({placeholders})
         ''', tickers)
         for r in c.fetchall():
@@ -71,20 +70,16 @@ def fetch_latest_market_data(tickers: list) -> dict:
             data[r[0]] = {
                 'close_price':      close,
                 'sector':           r[2]  or 'Unknown',
-                'vpin':             r[3]  or 0.3,
-                'obi':              r[4]  or 0.0,
-                'micro_price':      r[5]  or close,
-                'dealer_gex':       r[6]  or 0.0,
-                'insider_score':    r[7]  or 0.0,
-                'garch_volatility': r[8]  or 0.02,
-                'volume_ratio':     r[9]  or 1.0,
-                'hurst_exponent':   r[10] or 0.5,
-                'vwap':             r[11] or close,
-                'momentum_12_1':    r[12] or 0.0,
-                'reversal_5d':      r[13] or 0.0,
-                'volume_breakout':  r[14] or 0.0,
-                'vol_regime':       r[15] or 0.0,
-                'trend_strength':   r[16] or 0.0,
+                'garch_volatility': r[3]  or 0.02,
+                'volume_ratio':     r[4]  or 1.0,
+                'momentum_12_1':    r[5]  or 0.0,
+                'reversal_5d':      r[6]  or 0.0,
+                'vol_regime':       r[7]  or 0.0,
+                'vpin':             r[8]  or 0.3,
+                'obi':              r[9]  or 0.0,
+                'micro_price':      r[10] or 0.0,
+                'dealer_gex':       r[11] or 0.0,
+                'insider_score':    r[12] or 0.0,
             }
         conn.close()
     except Exception as e:
@@ -189,4 +184,3 @@ def run_cross_sectional_ranker():
 
 if __name__ == '__main__':
     run_cross_sectional_ranker()
-

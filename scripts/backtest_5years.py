@@ -300,6 +300,7 @@ def main():
     global_trades = []
     annual_reports = []
     prev_weights = {}
+    total_idx = 0
     
     print("\n--- Starting Vectorized Multi-Year Simulation Loop ---")
     
@@ -311,6 +312,23 @@ def main():
         year_values = [portfolio_value]
         
         for idx, day in enumerate(year_days):
+            # V15 dynamic walk-forward monthly retraining loop (every 20 trading days)
+            if total_idx > 0 and total_idx % 20 == 0:
+                print(f"🔄 [MONTHLY RETRAINING GATE] Retraining ML Models walk-forward up to {day}...")
+                try:
+                    from ml_ranker import build_and_train_models
+                    ranker, meta_model = build_and_train_models(
+                        ticker_arrays=ticker_arrays,
+                        ticker_metadata=ticker_metadata,
+                        end_date_str=day
+                    )
+                    engine.ml_ranker = ranker
+                    engine.meta_labeler = meta_model
+                    print("✅ ML Models successfully retrained walk-forward!")
+                except Exception as e:
+                    print(f"⚠️ Failed to retrain ML Models: {e}. Keeping current models.")
+            total_idx += 1
+
             # V13 Bug 6 FIX: Reset HMM regime state at start of each day
             # to prevent cross-ticker state leakage
             engine._regime_probs = _default_regime_probs.copy()
@@ -568,4 +586,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

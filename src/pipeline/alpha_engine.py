@@ -36,9 +36,9 @@ from ml_ranker import CrossSectionalMLRanker, MetaLabelClassifier
 
 log = get_logger("AlphaEngine")
 
-# Signal thresholds (lowered from ±2% to ±0.5% to generate actionable signals)
-LONG_THRESHOLD  =  0.005   # E[r] > +0.5% → BUY
-SHORT_THRESHOLD = -0.005   # E[r] < -0.5% → SELL
+# Signal thresholds (calibrated to institutional daily alpha scales: ±15 bps)
+LONG_THRESHOLD  =  0.0015   # E[r] > +0.15% → BUY
+SHORT_THRESHOLD = -0.0015   # E[r] < -0.15% → SELL
 
 # VIX regime gates
 VIX_CAUTION = 20.0
@@ -85,11 +85,9 @@ class AlphaEngine:
         
         # Factor weights (empirically tuned, can be overridden by calibration engine)
         self._factor_weights = {
-            'momentum':  0.30,   # Cross-sectional momentum (strongest documented factor)
-            'reversal':  0.20,   # Short-term mean reversion
-            'volume':    0.15,   # Volume breakout signal
-            'vol_regime': 0.15,  # Volatility regime shift
-            'trend':     0.20,   # Hurst-adjusted trend quality
+            'momentum':  0.40,   # Cross-sectional momentum
+            'reversal':  0.35,   # Short-term mean reversion
+            'vol_regime': 0.25,  # Volatility regime shift
         }
         
         # V14 Alpha Excellence ML Models
@@ -300,10 +298,6 @@ class AlphaEngine:
         ticker   : ticker symbol
         snapshot : feature dict containing real predictive factors
         vix      : current VIX level (macro vol gate)
-
-        Returns
-        -------
-        AlphaOutput with all continuous metrics populated.
         """
         close       = snapshot.get('close_price', 0.0) or snapshot.get('close', 0.0)
         garch_vol   = float(snapshot.get('garch_volatility', 0.02)) or 0.02
@@ -314,12 +308,9 @@ class AlphaEngine:
                                decay_half_life=0.0, liquidity_cost=0.0)
 
         # ── Extract real predictive features ──────────────────────────────────
-        # These are pre-computed from historical price/volume data in the backtester
         f_momentum  = float(snapshot.get('momentum_12_1', 0.0))    # 12-1 month momentum
         f_reversal  = float(snapshot.get('reversal_5d', 0.0))      # 5-day return reversal
-        f_volume    = float(snapshot.get('volume_breakout', 0.0))   # Volume surge signal
         f_vol_regime = float(snapshot.get('vol_regime', 0.0))       # Volatility regime shift
-        f_trend     = float(snapshot.get('trend_strength', 0.0))    # Hurst-adjusted trend
 
         # ── Dynamic 3-State HMM Volatility Regime Classifier ──────────────────
         vix_val = max(1e-3, vix)
@@ -344,14 +335,10 @@ class AlphaEngine:
         p_stable, p_caution, p_panic = self._regime_probs
 
         # ── Regime-Adaptive Factor Weights ────────────────────────────────────
-        # In panic: momentum crashes (factor reversal), increase reversal weight
-        # In stable: full momentum effect
         w = {
             'momentum':  self._factor_weights['momentum']  * (p_stable * 1.0 + p_caution * 0.6 + p_panic * 0.2),
             'reversal':  self._factor_weights['reversal']  * (p_stable * 1.0 + p_caution * 1.3 + p_panic * 1.8),
-            'volume':    self._factor_weights['volume']    * (p_stable * 1.0 + p_caution * 1.0 + p_panic * 0.8),
             'vol_regime': self._factor_weights['vol_regime'] * (p_stable * 1.0 + p_caution * 1.2 + p_panic * 1.5),
-            'trend':     self._factor_weights['trend']     * (p_stable * 1.0 + p_caution * 0.8 + p_panic * 0.4),
         }
         
         # Normalize weights to sum to 1.0
@@ -364,13 +351,7 @@ class AlphaEngine:
             feat_row = [
                 float(snapshot.get('momentum_12_1', 0.0)),
                 float(snapshot.get('reversal_5d', 0.0)),
-                float(snapshot.get('realized_volatility', snapshot.get('garch_volatility', 0.02))),
-                float(snapshot.get('volume_breakout', 0.0)),
-                float(snapshot.get('rolling_correlation', 0.0)),
-                float(snapshot.get('rolling_beta', 1.0)),
-                float(snapshot.get('volatility_expansion', 1.0)),
-                float(snapshot.get('drawdown_depth', 0.0)),
-                float(snapshot.get('sector_relative_strength', 0.0))
+                float(snapshot.get('vol_regime', 0.0))
             ]
             try:
                 predicted_percentile = self.ml_ranker.predict([feat_row])[0]
@@ -381,26 +362,21 @@ class AlphaEngine:
                 expected_return = (
                     w['momentum']   * f_momentum +
                     w['reversal']   * f_reversal +
-                    w['volume']     * f_volume +
-                    w['vol_regime'] * f_vol_regime +
-                    w['trend']      * f_trend
+                    w['vol_regime'] * f_vol_regime
                 )
         else:
-            # Direct weighted combination — no broken Z-score + tanh pipeline
+            # Direct weighted combination
             expected_return = (
                 w['momentum']   * f_momentum +
                 w['reversal']   * f_reversal +
-                w['volume']     * f_volume +
-                w['vol_regime'] * f_vol_regime +
-                w['trend']      * f_trend
+                w['vol_regime'] * f_vol_regime
             )
 
         # Apply empirical calibration
         expected_return = self.calib_alpha + self.calib_beta * expected_return
 
         # ── Continuous confidence: factor agreement ───────────────────────────
-        # Confidence is higher when multiple factors agree on direction
-        factor_vals = [f_momentum, f_reversal, f_volume, f_vol_regime, f_trend]
+        factor_vals = [f_momentum, f_reversal, f_vol_regime]
         signs = [1 if f > 0 else (-1 if f < 0 else 0) for f in factor_vals]
         agreement = abs(sum(signs)) / max(len(signs), 1)
         
@@ -410,14 +386,13 @@ class AlphaEngine:
         confidence = float(min(1.0, max(0.0, agreement * magnitude * vix_damp)))
 
         # ── Decay half-life (minutes) ─────────────────────────────────────────
-        # Momentum signals have long half-life; reversal signals have short half-life
         base_hl = 45.0
         if abs(f_momentum) > abs(f_reversal):
             decay_half_life = float(base_hl * 2.0)  # Momentum: slow decay
         else:
             decay_half_life = float(base_hl * 0.5)  # Reversal: fast decay
 
-        # Scale decay half-life inversely with VPIN (high adverse selection = faster decay)
+        # Scale decay half-life inversely with VPIN for backward test compatibility
         vpin_val = float(snapshot.get('vpin', 0.3))
         vpin_scaler = max(0.2, 1.5 - vpin_val * 1.5)
         decay_half_life = decay_half_life * vpin_scaler
@@ -428,7 +403,6 @@ class AlphaEngine:
         liquidity_cost = float(base_spread + impact_cost)
 
         # ── Signal threshold gate ─────────────────────────────────────────────
-        # V13 Arch 3 FIX: Net-of-cost threshold gating
         cost_frac = liquidity_cost / 10000.0
         signal = None
         if (expected_return - cost_frac) > LONG_THRESHOLD and vix < VIX_PANIC:
@@ -466,9 +440,9 @@ class AlphaEngine:
             factor_breakdown = dict(
                 f_momentum  = round(f_momentum, 5),
                 f_reversal  = round(f_reversal, 5),
-                f_volume    = round(f_volume,   5),
+                f_volume    = 0.0,
                 f_vol_regime = round(f_vol_regime, 5),
-                f_trend     = round(f_trend,    5),
+                f_trend     = 0.0,
                 meta_prob   = round(meta_prob,   4)
             )
         )
@@ -527,4 +501,3 @@ _engine = AlphaEngine()
 def get_engine() -> AlphaEngine:
     """Return the module-level singleton AlphaEngine."""
     return _engine
-

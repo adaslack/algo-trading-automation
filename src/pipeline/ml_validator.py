@@ -269,4 +269,3 @@ class MLValidator:
             'history': self.validation_history,
             'generated_at': datetime.now().isoformat(),
         }
-

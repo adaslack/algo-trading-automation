@@ -88,4 +88,3 @@ def execute_query(query: str, params: tuple = None, fetch: bool = False, commit:
             cursor.close()
         if conn:
             release_connection(conn)
-

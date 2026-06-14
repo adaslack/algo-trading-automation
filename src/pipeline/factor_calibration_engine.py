@@ -131,4 +131,3 @@ _calibration_engine = FactorCalibrationEngine()
 
 def get_calibration_engine() -> FactorCalibrationEngine:
     return _calibration_engine
-

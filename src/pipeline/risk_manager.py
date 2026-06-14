@@ -293,11 +293,10 @@ def on_signal_generated(event: Event):
         if is_halted:
             return
 
-        # V13 OPT: Single consolidated query for ALL market_data fields (was 3 separate queries)
+        # V15: Fetch only active V15 columns to purge unused remnants
         cursor.execute(
-            'SELECT close_price, volume, vpin, obi, micro_price, dealer_gex, insider_score, '
-            'garch_volatility, volume_ratio, hurst_exponent, vwap, '
-            'momentum_12_1, reversal_5d, volume_breakout, vol_regime, trend_strength '
+            'SELECT close_price, volume, garch_volatility, volume_ratio, '
+            'momentum_12_1, reversal_5d, vol_regime '
             'FROM market_data WHERE ticker = ?', (ticker,)
         )
         market_row = cursor.fetchone()
@@ -312,20 +311,11 @@ def on_signal_generated(event: Event):
         _mrow = market_row
         snapshot = {
             'close_price':      price,
-            'vpin':             float(_mrow[2]) if _mrow[2] is not None else 0.3,
-            'obi':              float(_mrow[3]) if _mrow[3] is not None else 0.0,
-            'micro_price':      float(_mrow[4]) if _mrow[4] is not None else price,
-            'dealer_gex':       float(_mrow[5]) if _mrow[5] is not None else 0.0,
-            'insider_score':    float(_mrow[6]) if _mrow[6] is not None else 0.0,
-            'garch_volatility': float(_mrow[7]) if _mrow[7] is not None else 0.02,
-            'volume_ratio':     float(_mrow[8]) if _mrow[8] is not None else 1.0,
-            'hurst_exponent':   float(_mrow[9]) if _mrow[9] is not None else 0.5,
-            'vwap':             float(_mrow[10]) if _mrow[10] is not None else price,
-            'momentum_12_1':    float(_mrow[11]) if _mrow[11] is not None else 0.0,
-            'reversal_5d':      float(_mrow[12]) if _mrow[12] is not None else 0.0,
-            'volume_breakout':  float(_mrow[13]) if _mrow[13] is not None else 0.0,
-            'vol_regime':       float(_mrow[14]) if _mrow[14] is not None else 0.0,
-            'trend_strength':   float(_mrow[15]) if _mrow[15] is not None else 0.0,
+            'garch_volatility': float(_mrow[2]) if _mrow[2] is not None else 0.02,
+            'volume_ratio':     float(_mrow[3]) if _mrow[3] is not None else 1.0,
+            'momentum_12_1':    float(_mrow[4]) if _mrow[4] is not None else 0.0,
+            'reversal_5d':      float(_mrow[5]) if _mrow[5] is not None else 0.0,
+            'vol_regime':       float(_mrow[6]) if _mrow[6] is not None else 0.0,
         }
         
         approved_action = None
@@ -522,4 +512,3 @@ def run_risk_manager():
 
 if __name__ == '__main__':
     run_risk_manager()
-

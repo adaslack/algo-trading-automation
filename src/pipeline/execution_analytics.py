@@ -168,3 +168,84 @@ class ExecutionAnalytics:
 
         return report
 
+
+class TelemetryTracker:
+    """
+    Live Telemetry Tracker for V15 Alpha Purity & Production Realism.
+    Tracks live realized metrics that define predictive edge and execution quality.
+    """
+    def __init__(self):
+        self.expected_returns = []
+        self.realized_5d_returns = []
+        self.slippages_bps = []
+        self.decay_points = {5: [], 15: [], 30: [], 60: []} # horizons in minutes
+        self.portfolio_returns = []
+        self.spy_returns = []
+
+    def record_signal_outcome(self, expected_ret: float, realized_5d_ret: float):
+        """Record expected return vs actual 5-day post-fill return to track realized Rank IC."""
+        self.expected_returns.append(expected_ret)
+        self.realized_5d_returns.append(realized_5d_ret)
+
+    def record_execution(self, fill_price: float, mid_price: float, action: str):
+        """Record fill price vs mid price at routing to track realized slippage."""
+        if mid_price > 0:
+            if action.upper() == 'BUY':
+                slip = ((fill_price - mid_price) / mid_price) * 10000.0
+            else:
+                slip = ((mid_price - fill_price) / mid_price) * 10000.0
+            self.slippages_bps.append(slip)
+
+    def record_decay(self, elapsed_minutes: int, return_realized: float):
+        """Track asset returns across standard half-life horizons to build decay curves."""
+        closest_hl = min(self.decay_points.keys(), key=lambda x: abs(x - elapsed_minutes))
+        self.decay_points[closest_hl].append(return_realized)
+
+    def record_daily_returns(self, portfolio_ret: float, spy_ret: float):
+        """Record realized daily portfolio and benchmark returns to track realized portfolio beta."""
+        self.portfolio_returns.append(portfolio_ret)
+        self.spy_returns.append(spy_ret)
+
+    def get_telemetry_report(self) -> dict:
+        """Calculate and return all rolling telemetry metrics."""
+        # 1. Realized Rank IC
+        realized_ic = 0.0
+        if len(self.expected_returns) >= 10:
+            try:
+                coef, _ = spearmanr(self.expected_returns[-100:], self.realized_5d_returns[-100:])
+                realized_ic = float(coef) if not np.isnan(coef) else 0.0
+            except Exception:
+                pass
+
+        # 2. Realized Slippage
+        avg_slippage = float(np.mean(self.slippages_bps)) if self.slippages_bps else 0.0
+
+        # 3. Signal Decay Curves (average return at each horizon)
+        decay_curve = {}
+        for hl, rets in self.decay_points.items():
+            decay_curve[f"ret_{hl}m"] = float(np.mean(rets)) if rets else 0.0
+
+        # 4. Realized Portfolio Beta against SPY
+        realized_beta = 1.0
+        if len(self.portfolio_returns) >= 5:
+            try:
+                cov = np.cov(self.portfolio_returns[-30:], self.spy_returns[-30:])
+                var_spy = np.var(self.spy_returns[-30:])
+                realized_beta = float(cov[0, 1] / (var_spy + 1e-9)) if not np.isnan(cov[0, 1]) else 1.0
+            except Exception:
+                pass
+
+        report = {
+            "realized_rank_ic": round(realized_ic, 4),
+            "realized_slippage_bps": round(avg_slippage, 2),
+            "signal_decay_curve": {k: round(v * 10000.0, 2) for k, v in decay_curve.items()}, # in bps
+            "realized_portfolio_beta": round(realized_beta, 3),
+            "samples_tracked": len(self.expected_returns)
+        }
+        
+        log.info(f"📊 [TELEMETRY REPORT] Realized IC: {report['realized_rank_ic']:.4f} | "
+                 f"Slippage: {report['realized_slippage_bps']:.2f} bps | "
+                 f"Beta: {report['realized_portfolio_beta']:.3f}")
+                 
+        return report
+

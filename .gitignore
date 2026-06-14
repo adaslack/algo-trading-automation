@@ -6,12 +6,13 @@ __pycache__/
 *.pyd
 .Python
 env/
-venv/
 ENV/
 
 # Database files and trading data
 data/
 logs/
+trade_log.csv
+paper_trades.csv
 
 # Local configuration files
 .env

@@ -180,4 +180,3 @@ class PortfolioStateEngine:
             f"Net Exp: {summary['net_exposure']} | "
             f"PnL: {summary['unrealized_pnl']}"
         )
-

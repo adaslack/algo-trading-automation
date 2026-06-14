@@ -191,47 +191,33 @@ async def handle_bar(bar):
         cursor.execute('''
             UPDATE market_data SET
                 timestamp=?, close_price=?, open_price=?, high_price=?, low_price=?, volume=?,
-                garch_volatility=?, volume_ratio=?, vwap=?, hurst_exponent=?,
-                vpin=?, obi=?, micro_price=?, dealer_gex=?, insider_score=?,
-                momentum_12_1=?, reversal_5d=?, volume_breakout=?, vol_regime=?, trend_strength=?
+                garch_volatility=?, volume_ratio=?, momentum_12_1=?, reversal_5d=?, vol_regime=?
             WHERE ticker=?
         ''', (
             datetime.datetime.now().isoformat(),
             close_p, open_p, high_p, low_p, vol_v,
             features.get('garch_volatility', 0.0), features.get('volume_ratio', 1.0),
-            features.get('vwap', close_p), features.get('hurst_exponent', 0.5),
-            features.get('vpin', 0.0), features.get('obi', 0.0),
-            features.get('micro_price', close_p), features.get('dealer_gex', 0.0),
-            features.get('insider_score', 0.0),
             features.get('momentum_12_1', 0.0), features.get('reversal_5d', 0.0),
-            features.get('volume_breakout', 0.0), features.get('vol_regime', 0.0),
-            features.get('trend_strength', 0.0), ticker
+            features.get('vol_regime', 0.0), ticker
         ))
         
         if cursor.rowcount == 0:
             cursor.execute('''
                 INSERT INTO market_data (
                     ticker, timestamp, close_price, open_price, high_price, low_price, volume,
-                    garch_volatility, volume_ratio, vwap, hurst_exponent,
-                    vpin, obi, micro_price, dealer_gex, insider_score,
-                    momentum_12_1, reversal_5d, volume_breakout, vol_regime, trend_strength
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    garch_volatility, volume_ratio, momentum_12_1, reversal_5d, vol_regime
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             ''', (
                 ticker, datetime.datetime.now().isoformat(),
                 close_p, open_p, high_p, low_p, vol_v,
                 features.get('garch_volatility', 0.0), features.get('volume_ratio', 1.0),
-                features.get('vwap', close_p), features.get('hurst_exponent', 0.5),
-                features.get('vpin', 0.0), features.get('obi', 0.0),
-                features.get('micro_price', close_p), features.get('dealer_gex', 0.0),
-                features.get('insider_score', 0.0),
                 features.get('momentum_12_1', 0.0), features.get('reversal_5d', 0.0),
-                features.get('volume_breakout', 0.0), features.get('vol_regime', 0.0),
-                features.get('trend_strength', 0.0)
+                features.get('vol_regime', 0.0)
             ))
             
         conn.commit()
         
-        log.debug(f"[STREAM] {ticker} | Price: {close_p:.2f} | VPIN: {features.get('vpin', 0.0):.2f} | OBI: {features.get('obi', 0.0):.2f}")
+        log.debug(f"[STREAM] {ticker} | Price: {close_p:.2f} | Momentum: {features.get('momentum_12_1', 0.0):.2f}")
         
     except Exception as e:
         log.error(f"Error saving features for {ticker}: {e}")
@@ -265,4 +251,3 @@ def run_websocket_ingest():
 
 if __name__ == '__main__':
     run_websocket_ingest()
-

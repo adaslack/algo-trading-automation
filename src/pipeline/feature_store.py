@@ -160,29 +160,11 @@ class FeatureStore:
             'description': 'Rolling realized conditional returns standard deviation scaled to annual equivalent.',
             'compute_formula': 'std(returns[-20:]) * sqrt(252)'
         },
-        'hurst_exponent': {
-            'version': '2.0.1',
-            'lookback_bars': 200,
-            'description': 'Long memory time-series correlation exponent computed via decimated R/S analysis.',
-            'compute_formula': 'rescaled_range_analysis(returns)'
-        },
         'volume_ratio': {
             'version': '1.0.0',
             'lookback_bars': 20,
             'description': 'Ratio of current bar volume to rolling average volume.',
             'compute_formula': 'current_volume / mean_volume_20d'
-        },
-        'obi': {
-            'version': '1.2.0',
-            'lookback_bars': 1,
-            'description': 'Order Book Imbalance computed from buying vs selling pressure.',
-            'compute_formula': '(estimated_bid_vol - estimated_ask_vol) / (total_volume + 1)'
-        },
-        'vpin': {
-            'version': '2.1.0',
-            'lookback_bars': 30,
-            'description': 'Volume-Synchronized Probability of Informed Trading adverse selection metric.',
-            'compute_formula': 'rolling_sum(abs(buy_vol - sell_vol)) / rolling_sum(total_volume)'
         }
     }
 
@@ -195,10 +177,6 @@ class FeatureStore:
         self._last_computed: dict[str, datetime] = {}
         # Thread lock for concurrency safety
         self._lock = threading.Lock()
-        
-        # Hurst Exponent Cache & Counter (Phase-2 CPU Optimization)
-        self._hurst_cache = {}
-        self._hurst_counter = {}
 
         # Initialize Feature Lineage Registry from static registry definitions
         try:
@@ -218,7 +196,7 @@ class FeatureStore:
     def compute_features(self, ticker: str, df: pd.DataFrame, alt_data: dict = None) -> dict:
         """
         Compute all features for a ticker from a price DataFrame.
-        V13: Now computes real predictive features alongside legacy features.
+        V15: Strictly pruned to three core alpha factors (Momentum, Reversal, Vol Regime).
         """
         if df is None or len(df) < 50:
             return {}
@@ -233,31 +211,16 @@ class FeatureStore:
             
             latest = df_calc.iloc[-1].fillna(0).to_dict()
             latest['close_price'] = latest['close']
-            close = float(latest['close'])
             
             # VWAP & GARCH Volatility proxy
             latest['vwap'] = _compute_vwap(df_calc)
             latest['garch_volatility'] = float(returns.tail(20).std() * np.sqrt(252)) if len(returns) >= 20 else 0.03
             
-            # Hurst Exponent Decimation (Calculate once every 10 ticks to save 90% CPU overhead)
-            with self._lock:
-                if ticker not in self._hurst_counter:
-                    self._hurst_counter[ticker] = 0
-                self._hurst_counter[ticker] += 1
-                
-                if self._hurst_counter[ticker] % 10 == 0 or ticker not in self._hurst_cache:
-                    h_val = _compute_hurst(close_prices)
-                    self._hurst_cache[ticker] = h_val
-                else:
-                    h_val = self._hurst_cache[ticker]
-            
-            latest['hurst_exponent'] = h_val
-            
             avg_vol = df_calc['volume'].rolling(window=20).mean()
             latest['volume_ratio'] = float(latest['volume'] / avg_vol.replace(0, np.nan).iloc[-1]) if len(avg_vol) > 0 else 1.0
             
             # ══════════════════════════════════════════════════════════════════
-            # V13 REAL PREDICTIVE FEATURES (reused from unified implementation)
+            # V15 PURE PREDICTIVE CORE FACTORS (reused from unified implementation)
             # ══════════════════════════════════════════════════════════════════
             real_features = FeatureStore.compute_real_features(close_prices, volumes, N - 1)
             if real_features:
@@ -266,42 +229,8 @@ class FeatureStore:
                 latest.update({
                     'momentum_12_1': 0.0,
                     'reversal_5d': 0.0,
-                    'volume_breakout': 0.0,
                     'vol_regime': 0.0,
-                    'trend_strength': 0.0,
                 })
-            
-            # ══════════════════════════════════════════════════════════════════
-            # LEGACY FEATURES (kept for backward compatibility with other modules)
-            # ══════════════════════════════════════════════════════════════════
-            
-            # OBI & Micro-Price
-            buying_pressure = (latest['close'] - latest['low']) / (latest['high'] - latest['low'] + 0.0001)
-            selling_pressure = (latest['high'] - latest['close']) / (latest['high'] - latest['low'] + 0.0001)
-            estimated_bid_vol = latest['volume'] * buying_pressure
-            estimated_ask_vol = latest['volume'] * selling_pressure
-            
-            latest['obi'] = (estimated_bid_vol - estimated_ask_vol) / (latest['volume'] + 1)
-            latest['micro_price'] = (estimated_bid_vol * latest['low'] + estimated_ask_vol * latest['high']) / (latest['volume'] + 1)
-            
-            # VPIN (Volume-Synchronized Probability of Toxicity)
-            price_changes = df_calc['close'].diff()
-            rolling_volatility = price_changes.rolling(window=20).std().replace(0, 0.0001).fillna(0.0001)
-            z_scores = (price_changes / rolling_volatility).fillna(0.0)
-            
-            buy_ratios = _scipy_norm.cdf(z_scores.clip(-3.0, 3.0))
-            buy_vols = df_calc['volume'] * buy_ratios
-            sell_vols = df_calc['volume'] * (1 - buy_ratios)
-            
-            absolute_imbalances = (buy_vols - sell_vols).abs()
-            rolling_imbalance_sum = absolute_imbalances.tail(30).sum()
-            rolling_volume_sum = df_calc['volume'].tail(30).sum()
-            
-            latest['vpin'] = float(rolling_imbalance_sum / (rolling_volume_sum + 0.0001))
-            
-            # Alternative Data Signals (Purged for V14 Alpha Excellence)
-            latest['dealer_gex'] = 0.0
-            latest['insider_score'] = 0.0
             
             latest['volatility_20d'] = float(returns.tail(20).std() * np.sqrt(252)) if len(returns) >= 20 else 0.0
             latest['volatility_5d'] = float(returns.tail(5).std() * np.sqrt(252)) if len(returns) >= 5 else 0.0
@@ -388,7 +317,7 @@ class FactorResidualizer:
         if len(universe_features) < 3:
             return universe_features
             
-        factors = ['momentum_12_1', 'reversal_5d', 'vol_regime', 'volume_breakout']
+        factors = ['momentum_12_1', 'reversal_5d', 'vol_regime']
         residualized = {}
         for ticker, feats in universe_features.items():
             residualized[ticker] = feats.copy()
@@ -434,5 +363,4 @@ class FactorResidualizer:
                     residualized[t][f] = universe_features[t].get(f, 0.0) - sec_avg
                     
         return residualized
-
 
