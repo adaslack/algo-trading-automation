@@ -48,10 +48,79 @@ from alpha_engine import AlphaOutput
 
 log = get_logger("BayesianPortfolio")
 
-DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    'data', 'trading_brain.db'
-)
+from paths import DB_PATH
+
+METADATA_FALLBACK = {
+    'AAPL': {'marketCap': 3_000_000_000_000, 'sector': 'Technology'},
+    'MSFT': {'marketCap': 3_100_000_000_000, 'sector': 'Technology'},
+    'NVDA': {'marketCap': 2_200_000_000_000, 'sector': 'Technology'},
+    'AMZN': {'marketCap': 1_800_000_000_000, 'sector': 'Consumer Cyclical'},
+    'GOOGL': {'marketCap': 1_700_000_000_000, 'sector': 'Technology'},
+    'META': {'marketCap': 1_200_000_000_000, 'sector': 'Technology'},
+    'TSLA': {'marketCap': 550_000_000_000, 'sector': 'Consumer Cyclical'},
+    'AVGO': {'marketCap': 600_000_000_000, 'sector': 'Technology'},
+    'LLY': {'marketCap': 700_000_000_000, 'sector': 'Healthcare'},
+    'V': {'marketCap': 500_000_000_000, 'sector': 'Financial Services'},
+    'AMD': {'marketCap': 180_000_000_000, 'sector': 'Technology'},
+    'INTC': {'marketCap': 110_000_000_000, 'sector': 'Technology'},
+    'PYPL': {'marketCap': 65_000_000_000, 'sector': 'Financial Services'},
+    'QCOM': {'marketCap': 185_000_000_000, 'sector': 'Technology'},
+    'TXN': {'marketCap': 150_000_000_000, 'sector': 'Technology'},
+    'DIS': {'marketCap': 170_000_000_000, 'sector': 'Consumer Cyclical'},
+    'SBUX': {'marketCap': 85_000_000_000, 'sector': 'Consumer Cyclical'},
+    'NKE': {'marketCap': 115_000_000_000, 'sector': 'Consumer Cyclical'},
+    'SCHW': {'marketCap': 130_000_000_000, 'sector': 'Financial Services'},
+    'CVS': {'marketCap': 70_000_000_000, 'sector': 'Healthcare'},
+    'DBX': {'marketCap': 8_500_000_000, 'sector': 'Technology'},
+    'GPRO': {'marketCap': 2_100_000_000, 'sector': 'Technology'},
+    'RBLX': {'marketCap': 9_200_000_000, 'sector': 'Technology'},
+    'RUN': {'marketCap': 3_500_000_000, 'sector': 'Technology'},
+    'HOOD': {'marketCap': 9_500_000_000, 'sector': 'Financial Services'},
+    'CHWY': {'marketCap': 7_800_000_000, 'sector': 'Consumer Cyclical'},
+    'PLUG': {'marketCap': 2_200_000_000, 'sector': 'Industrials'},
+    'UPST': {'marketCap': 2_500_000_000, 'sector': 'Financial Services'},
+    'AFRM': {'marketCap': 8_200_000_000, 'sector': 'Financial Services'},
+    'SOFI': {'marketCap': 6_800_000_000, 'sector': 'Financial Services'},
+    'BLNK': {'marketCap': 450_000_000, 'sector': 'Consumer Cyclical'},
+    'RIOT': {'marketCap': 1_800_000_000, 'sector': 'Technology'},
+    'MARA': {'marketCap': 1_900_000_000, 'sector': 'Technology'},
+    'HUT': {'marketCap': 650_000_000, 'sector': 'Technology'},
+    'LAZR': {'marketCap': 550_000_000_000, 'sector': 'Technology'},
+    'NKLA': {'marketCap': 400_000_000, 'sector': 'Consumer Cyclical'},
+    'RIVN': {'marketCap': 12_000_000_000, 'sector': 'Consumer Cyclical'},
+    'IONQ': {'marketCap': 5_000_000_000, 'sector': 'Technology'},
+    'APPS': {'marketCap': 350_000_000, 'sector': 'Technology'},
+    'CLSK': {'marketCap': 1_200_000_000, 'sector': 'Technology'},
+    'WKHS': {'marketCap': 320_000_000, 'sector': 'Industrials'},
+    'SPWR': {'marketCap': 310_000_000, 'sector': 'Technology'},
+    'EVGO': {'marketCap': 280_000_000, 'sector': 'Consumer Cyclical'},
+    'HYLN': {'marketCap': 150_000_000, 'sector': 'Industrials'},
+    'IVR': {'marketCap': 220_000_000, 'sector': 'Financial Services'},
+    'SOUN': {'marketCap': 3_000_000_000, 'sector': 'Technology'},
+    'DNA': {'marketCap': 1_500_000_000, 'sector': 'Healthcare'},
+    'LCID': {'marketCap': 6_500_000_000, 'sector': 'Consumer Cyclical'},
+    'CEI': {'marketCap': 80_000_000, 'sector': 'Energy'},
+    'MMAT': {'marketCap': 95_000_000, 'sector': 'Technology'},
+    'MULN': {'marketCap': 55_000_000, 'sector': 'Consumer Cyclical'},
+    'XELA': {'marketCap': 60_000_000, 'sector': 'Technology'},
+    'AEON': {'marketCap': 120_000_000, 'sector': 'Healthcare'},
+    'WTI': {'marketCap': 290_000_000, 'sector': 'Energy'},
+    'SMCI': {'marketCap': 15_000_000_000, 'sector': 'Technology'},
+    'SCPL': {'marketCap': 210_000_000, 'sector': 'Technology'},
+    'BTDR': {'marketCap': 1_200_000_000, 'sector': 'Technology'},
+    'LUNR': {'marketCap': 2_500_000_000, 'sector': 'Industrials'},
+    'HUSA': {'marketCap': 15_000_000, 'sector': 'Energy'},
+    'METX': {'marketCap': 12_000_000, 'sector': 'Education'},
+    'SINT': {'marketCap': 8_000_000, 'sector': 'Industrials'},
+    'PHUN': {'marketCap': 35_000_000, 'sector': 'Technology'},
+    'OPTT': {'marketCap': 18_000_000, 'sector': 'Industrials'},
+    'CLOV': {'marketCap': 1_800_000_000, 'sector': 'Healthcare'},
+    'BIOL': {'marketCap': 9_000_000, 'sector': 'Healthcare'},
+    'TOPS': {'marketCap': 5_000_000, 'sector': 'Industrials'},
+    'SHIP': {'marketCap': 22_000_000, 'sector': 'Industrials'},
+    'GLBS': {'marketCap': 14_000_000, 'sector': 'Industrials'},
+    'EDSA': {'marketCap': 7_000_000, 'sector': 'Healthcare'}
+}
 
 # Position size bounds
 MIN_ALLOC = 0.01   # 1%  of portfolio
@@ -202,6 +271,19 @@ class BayesianPortfolio:
         realised_return  : net return (e.g. 0.015 = +1.5%)
         obs_noise        : observation noise std (default 3% per trade)
         """
+        # Dynamic Heteroscedastic noise adjustment based on market regime (VIX)
+        try:
+            from alpha_engine import get_engine
+            engine = get_engine()
+            vix_val = float(engine._hmm_means[0] * engine._regime_probs[0] + 
+                            engine._hmm_means[1] * engine._regime_probs[1] + 
+                            engine._hmm_means[2] * engine._regime_probs[2])
+            vix_val = max(10.0, min(80.0, vix_val))
+            # Scale observation noise dynamically: standard noise * (VIX_expected / 15.0)
+            obs_noise = obs_noise * (vix_val / 15.0)
+        except Exception:
+            pass
+
         if strategy not in self._beliefs:
             self._beliefs[strategy] = _StrategyBelief()
         self._beliefs[strategy].update(realised_return, obs_noise)
@@ -211,7 +293,7 @@ class BayesianPortfolio:
             f"Posterior update [{strategy}]: "
             f"μ={b.mu*100:+.2f}% σ={b.sigma*100:.2f}% "
             f"n={b.n} WR={b.win_rate*100:.0f}% "
-            f"Sharpe≈{b.sharpe_proxy:.2f}"
+            f"Sharpe≈{b.sharpe_proxy:.2f} (Heteroscedastic obs_noise={obs_noise*100:.2f}%)"
         )
 
     # ── Uncertainty-aware position sizing ────────────────────────────────────
@@ -393,24 +475,9 @@ class BayesianPortfolio:
         for t in tickers:
             aligned_returns.append(returns_dict[t][-min_len:])
             
-        # Online Bayesian Recursive Covariance tracking
-        tickers_key = tuple(tickers)
-        if tickers_key not in self._running_cov:
-            # V13 Opt 4: LRU eviction — purge oldest entries when cache exceeds max
-            if len(self._running_cov) >= self._max_cov_entries:
-                oldest_key = next(iter(self._running_cov))
-                del self._running_cov[oldest_key]
-            self._running_cov[tickers_key] = _RunningCovariance(tickers, alpha=0.96)
-        rc = self._running_cov[tickers_key]
-        
-        # Extract latest return for each asset in active cross-sectional order
-        latest_returns = np.array([returns_dict[t][-1] if len(returns_dict[t]) > 0 else 0.0 for t in tickers], dtype=float)
-        
-        # Update running covariance recursively
-        rc.update(latest_returns)
-        S = rc.cov
-        # Annualize daily covariance matrix to match the annualized expected return horizon
-        S_annual = S * 252
+        # V16: Estimate stable diagonal covariance matrix directly from historical aligned returns to prevent correlation noise from inverting weights
+        S_diag = np.var(aligned_returns, axis=1)
+        S_annual = np.diag(np.maximum(S_diag, 1e-6) * 252)
             
         # Ledoit-Wolf Shrinkage Target matrix T (constant variance)
         mean_var = np.mean(np.diag(S_annual))
@@ -423,16 +490,24 @@ class BayesianPortfolio:
         # Regularization for stability
         cov_shrink += np.eye(N) * 1e-6
         
-        # Bayesian Mean-Variance Optimization: w* = (1/gamma) * inv(Cov) * E[r]
-        # Noise Filtering: Use continuous expected returns, but only allow active E[r] if there is a signal
+        # Cross-sectional long-short rank gating:
+        # Instead of absolute thresholding (which causes signal crowding and zero allocations),
+        # we rank the watchlist assets and go long the top 50% and short the bottom 50%.
+        valid_outputs = [o for o in alpha_outputs if o.ticker in returns_dict]
+        valid_outputs.sort(key=lambda x: x.expected_return, reverse=True)
+        half = len(valid_outputs) // 2
+        
+        long_tickers = set(o.ticker for o in valid_outputs[:half])
+        
         er_list = []
         for o in alpha_outputs:
             if o.ticker in returns_dict:
-                # Signal Gating: if there is no high-conviction buy/sell signal, treat expected return as 0.0 to prevent trading neutral assets
-                if o.signal is not None:
-                    er_list.append(o.expected_return)
+                # Retain the expected return sign based on relative ranking (top half long, bottom half short)
+                raw_er = o.expected_return
+                if o.ticker in long_tickers:
+                    er_list.append(max(0.0001, abs(raw_er)))
                 else:
-                    er_list.append(0.0)
+                    er_list.append(min(-0.0001, -abs(raw_er)))
         er = np.array(er_list, dtype=float)
 
         
@@ -464,6 +539,14 @@ class BayesianPortfolio:
         except Exception as ex:
             log.warning(f"Could not load sector mappings from DB: {ex}")
 
+        # Fallback to hardcoded METADATA_FALLBACK sector mapping if not populated in DB
+        for t in tickers:
+            if t not in sectors or sectors[t] == 'Unknown':
+                if t in METADATA_FALLBACK:
+                    sectors[t] = METADATA_FALLBACK[t]['sector']
+                else:
+                    sectors[t] = 'Unknown'
+
         # Compute dynamic rolling beta for all assets against watchlist mean proxy
         spy_rets = None
         if 'SPY' in price_history:
@@ -472,34 +555,21 @@ class BayesianPortfolio:
                 spy_rets = np.diff(np.log(spy_prices + 1e-9))
         
         if spy_rets is None:
-            all_rets = list(returns_dict.values())
+            all_rets = [returns_dict[t][-min_len:] for t in tickers if t in returns_dict]
             if all_rets:
                 spy_rets = np.mean(all_rets, axis=0)
 
-        betas = {}
-        for t in tickers:
-            if t in returns_dict and spy_rets is not None and len(spy_rets) == len(returns_dict[t]):
-                cov_val = np.cov(returns_dict[t], spy_rets)
-                var_spy = np.var(spy_rets)
-                betas[t] = cov_val[0, 1] / (var_spy + 1e-9)
-            else:
-                betas[t] = 1.0
-
         # Construct linear constraint matrix A of shape (M, N)
-        # s.t. A * w = 0 (Dollar, Beta, and Sector neutrality)
+        # V16: Sector Neutrality constraints (which mathematically imply Dollar Neutrality)
+        # Forces long-short pair matching within sector buckets to capture cross-sectional alpha.
         A_rows = []
-        # 1. Dollar Neutrality: Sum(w_i) = 0
-        A_rows.append(np.ones(N))
-        # 2. Beta Neutrality: Sum(w_i * beta_i) = 0
-        A_rows.append(np.array([betas.get(t, 1.0) for t in tickers]))
-        # 3. Sector Neutrality: Sum(w_i in sector_k) = 0 for each unique sector
-        unique_sectors = list(set(sectors.get(t, 'Unknown') for t in tickers))
-        for sec in unique_sectors:
-            if sec == 'Unknown' or sec == 'Market':
-                continue
-            row = np.array([1.0 if sectors.get(t, 'Unknown') == sec else 0.0 for t in tickers])
-            if np.sum(row) > 0 and not np.all(row == 1.0):
-                A_rows.append(row)
+        unique_sectors = sorted(list(set(sectors.get(t, 'Unknown') for t in tickers)))
+        for sect in unique_sectors:
+            row = np.zeros(N)
+            for i, t in enumerate(tickers):
+                if sectors.get(t, 'Unknown') == sect:
+                    row[i] = 1.0
+            A_rows.append(row)
 
         A = np.array(A_rows)
         
@@ -514,7 +584,7 @@ class BayesianPortfolio:
                 log.error(f"Error during analytical portfolio projection: {ex}")
 
         allocated_weights = {}
-        kappa = 0.25  # Dynamic update rate: responsive adjustments
+        kappa = 0.25  # V16: Re-calibrated to 0.25 for balanced execution and turnover penalty
         
         # HMM Panic Regime Capital Protection: contract exposure up to 90% in panic states
         try:
@@ -527,14 +597,13 @@ class BayesianPortfolio:
         # Smooth and adjust active tickers
         for i, t in enumerate(tickers):
             w = raw_weights[i]
-            # Clip weights to bounds (-10% to +10% per asset)
+            # V16: Bounds reverted to ±10% for conservative and stable position sizing
             w_clipped = float(np.clip(w, -0.10, 0.10))
             
             # Retrieve previous weight to penalize turnover
             w_prev = self._prev_weights.get(t, 0.0)
             
-            # Rebalancing Band: if the absolute target change is smaller than 2.0%,
-            # and we are not trying to exit (target is not 0.0), keep the previous weight intact to save slippage costs!
+            # V16: Rebalancing band adjusted to 2.0% to match V13 baseline
             if abs(w_clipped - w_prev) < 0.020 and abs(w_clipped) > 1e-4:
                 w_smoothed = w_prev
             else:
@@ -559,7 +628,7 @@ class BayesianPortfolio:
                     final_w = final_w * (target_gross / current_gross)
                 
                 for i, t in enumerate(tickers):
-                    w_val = float(np.clip(final_w[i], -0.15, 0.15))
+                    w_val = float(np.clip(final_w[i], -0.10, 0.10))
                     allocated_weights[t] = round(w_val, 4)
                     self._prev_weights[t] = w_val
             except Exception as ex:

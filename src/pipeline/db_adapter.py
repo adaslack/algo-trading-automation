@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DUCKDB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.duckdb')
+from paths import DUCKDB_PATH
 
 def get_connection():
     """Returns an active DuckDB or PostgreSQL connection based on the environment."""

@@ -348,10 +348,15 @@ class AlphaEngine:
 
         # ── Compute Expected Return ───────────────────────────────────────────
         if hasattr(self, 'ml_ranker') and self.ml_ranker is not None and self.ml_ranker.is_fitted:
+            # V16: Full 7-factor feature vector matching FEATURE_NAMES in ml_ranker.py
             feat_row = [
                 float(snapshot.get('momentum_12_1', 0.0)),
                 float(snapshot.get('reversal_5d', 0.0)),
-                float(snapshot.get('vol_regime', 0.0))
+                float(snapshot.get('vol_regime', 0.0)),
+                float(snapshot.get('volume_breakout', 0.0)),
+                float(snapshot.get('volatility_expansion', 1.0)),
+                float(snapshot.get('drawdown_depth', 0.0)),
+                float(snapshot.get('sector_relative_strength', 0.0))
             ]
             try:
                 predicted_percentile = self.ml_ranker.predict([feat_row])[0]
@@ -413,18 +418,20 @@ class AlphaEngine:
         # ── Meta-Label Gating ─────────────────────────────────────────────────
         meta_prob = 1.0
         if signal is not None and hasattr(self, 'meta_labeler') and self.meta_labeler is not None and self.meta_labeler.is_fitted:
+            # V16: Real dynamic meta-label features (matches training data in ml_ranker.py)
+            real_spread = max(2.0, garch_vol * 50.0)
             meta_row = [
-                float(liquidity_cost),
-                float(vix),
-                float(volume_ratio),
-                float(np.sign(expected_return)),
-                float(garch_vol),
-                0.0 # base sector regime
+                float(real_spread),               # dynamic spread from GARCH vol
+                float(vix),                       # actual VIX level
+                float(volume_ratio),              # real volume ratio
+                float(np.sign(expected_return)),   # signal direction
+                float(garch_vol),                 # real GARCH vol
+                float(snapshot.get('sector_relative_strength', 0.0))  # real sector regime
             ]
             try:
                 meta_prob = float(self.meta_labeler.predict_proba([meta_row])[0])
-                if meta_prob < 0.55:
-                    # Suppress signal due to low probability of success
+                if meta_prob < 0.52:
+                    # V16: Lowered threshold from 0.55 to 0.52 to stop killing marginal signals
                     log.info(f"Signal for {ticker} suppressed by Meta-Labeling: Prob={meta_prob:.2f}")
                     signal = None
             except Exception as e:

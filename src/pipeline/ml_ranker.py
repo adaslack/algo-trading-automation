@@ -21,11 +21,15 @@ from logger import get_logger
 
 log = get_logger("MLRanker")
 
-# Core features used for cross-sectional ranking (V15 Pruned Strictly to 3 Core Alpha Factors)
+# Core features used for cross-sectional ranking (V16 Expanded to 7 Alpha Factors)
 FEATURE_NAMES = [
     'momentum_12_1',
     'reversal_5d',
-    'vol_regime'
+    'vol_regime',
+    'volume_breakout',
+    'volatility_expansion',
+    'drawdown_depth',
+    'sector_relative_strength'
 ]
 
 # Secondary macro/micro features used for meta-labeling
@@ -46,9 +50,9 @@ class CrossSectionalMLRanker:
     """
     def __init__(self):
         self.model = HistGradientBoostingRegressor(
-            max_iter=100,
+            max_iter=200,
             learning_rate=0.05,
-            max_leaf_nodes=31,
+            max_leaf_nodes=63,
             min_samples_leaf=20,
             random_state=42
         )
@@ -370,7 +374,7 @@ def build_and_train_models(
 
         for ticker in all_metrics:
             metrics = all_metrics[ticker]
-            # Core 3 Features
+            # V16: Full 8-factor feature vector
             feat_row = [metrics[name][t_idx] for name in FEATURE_NAMES]
             if is_train:
                 X_reg_train_list.append(feat_row)
@@ -379,19 +383,24 @@ def build_and_train_models(
                 X_reg_val_list.append(feat_row)
                 y_reg_val_list.append(percentiles[ticker])
 
-            # Meta-Labeling Generation
+            # Meta-Labeling Generation with REAL dynamic features
             signal_direction = np.sign(metrics['momentum_12_1'][t_idx] + metrics['reversal_5d'][t_idx])
             if signal_direction != 0:
                 future_outcome = future_5d_rets[ticker][t_idx]
                 success = 1 if (future_outcome * signal_direction > 0) else 0
                 
+                # V16: Real dynamic meta-label features instead of hardcoded constants
+                real_vol = metrics['realized_volatility'][t_idx]
+                real_spread = max(2.0, real_vol * 50.0)  # spread scales with volatility
+                real_liquidity = metrics['volume_breakout'][t_idx] + 1.0
+                real_sector_regime = metrics.get('sector_relative_strength', np.zeros(len(metrics['momentum_12_1'])))[t_idx]
                 meta_row = [
-                    2.0,  # approximate base spread (bps)
-                    15.0, # base VIX
-                    metrics['volume_breakout'][t_idx] + 1.0, # liquidity proxy
-                    float(signal_direction), # crowding proxy
-                    metrics['realized_volatility'][t_idx],
-                    0.0  # base sector regime
+                    real_spread,              # dynamic spread estimate
+                    15.0 + real_vol * 30.0,   # VIX proxy from realized vol
+                    real_liquidity,           # real volume ratio
+                    float(signal_direction),  # signal direction
+                    real_vol,                 # real GARCH vol
+                    real_sector_regime        # real sector relative strength
                 ]
                 if is_train:
                     X_meta_train_list.append(meta_row)

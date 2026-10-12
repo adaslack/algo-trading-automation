@@ -7,6 +7,17 @@ This fully purges SQLite from active memory paths across all research and pipeli
 """
 import sys
 import os
+import asyncio
+
+# Setup a default event loop globally for Python 3.14+ asyncio compatibility
+try:
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+except Exception:
+    pass
 
 class _DuckDBCursorProxy:
     __slots__ = ('_cursor',)

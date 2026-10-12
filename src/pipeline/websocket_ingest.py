@@ -1,22 +1,28 @@
 """
-Websocket Data Engine (Intraday - Optimized)
-===========================================
-Replaces the old Yahoo Finance 5-minute polling with true institutional
-websockets via Alpaca. Subscribes to real-time 1-minute bars for the watchlist.
+Websocket Data Engine (Intraday - Broker-Agnostic V2)
+=======================================================
+Replaces the old Yahoo Finance 5-minute polling with real institutional
+websockets via the unified broker interface. Subscribes to real-time
+1-minute bars for the watchlist using whatever broker is configured.
 
-Optimized with yfinance bulk download pre-loading fallbacks.
+Supports: IBKR reqRealTimeBars, yfinance fallback.
 """
 import sqlite3
 import datetime
 import pandas as pd
 import numpy as np
 import os
+import sys
 import asyncio
 from dotenv import load_dotenv
-from alpaca.data.live import StockDataStream
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+
+# Add brokers to path
+_BROKERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'brokers')
+if _BROKERS_DIR not in sys.path:
+    sys.path.insert(0, _BROKERS_DIR)
+
+from broker_factory import get_broker
+
 from logger import get_logger
 
 # Import feature store & Event Bus
@@ -28,19 +34,17 @@ log = get_logger("Websocket Ingest")
 feature_store = FeatureStore()
 event_bus = get_bus()
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.db')
+from paths import DB_PATH
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env'))
-API_KEY = os.getenv('ALPACA_API_KEY')
-SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
 
-if not API_KEY or not SECRET_KEY:
-    log.error("ALPACA_API_KEY or ALPACA_SECRET_KEY is missing. Websocket cannot start.")
-    exit(1)
-
-# Initialize clients
-stream = StockDataStream(API_KEY, SECRET_KEY)
-hist_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+# Initialize broker (lazy)
+broker = None
+try:
+    broker = get_broker(auto_connect=True)
+    log.info(f"Websocket Ingest using broker: {broker.name}")
+except Exception as e:
+    log.error(f"Could not initialize broker for Websocket Ingest: {e}")
 
 import threading
 
@@ -72,65 +76,62 @@ def get_watchlist():
         return []
 
 def preload_history(tickers):
-    """Preloads the last 200 minute bars to initialize indicators."""
+    """Preloads the last 200 minute bars via the broker or yfinance fallback."""
     log.info(f"Preloading historical minute bars for {len(tickers)} tickers...")
     
     end_dt = datetime.datetime.now(datetime.timezone.utc)
-    start_dt = end_dt - datetime.timedelta(days=2) # 2 days of minute bars should be > 200 bars
+    start_dt = end_dt - datetime.timedelta(days=2)  # 2 days of minute bars > 200 bars
     
-    req = StockBarsRequest(
-        symbol_or_symbols=tickers,
-        timeframe=TimeFrame.Minute,
-        start=start_dt,
-        end=end_dt
-    )
+    # Try broker API first
+    if broker and broker.is_connected():
+        try:
+            bars_data = broker.get_historical_bars(tickers, '1Min', start_dt, end_dt)
+            for ticker in tickers:
+                if ticker in bars_data and bars_data[ticker]:
+                    df = pd.DataFrame([
+                        {'timestamp': b.timestamp, 'open': b.open, 'high': b.high,
+                         'low': b.low, 'close': b.close, 'volume': b.volume}
+                        for b in bars_data[ticker]
+                    ])
+                    if not df.empty:
+                        for col in ['open', 'high', 'low', 'close', 'volume']:
+                            df[col] = df[col].astype(np.float32)
+                        df.set_index('timestamp', inplace=True)
+                        data_cache[ticker] = df.tail(200)
+                        log.info(f"Preloaded {len(data_cache[ticker])} bars for {ticker} via {broker.name}")
+            return  # Success via broker
+        except Exception as e:
+            log.error(f"Failed to preload history via broker: {e}")
     
+    # Fallback to yfinance bulk download
+    log.info("Attempting Yahoo Finance bulk download fallback for preloading 1-minute bars...")
     try:
-        bars = hist_client.get_stock_bars(req)
+        import yfinance as yf
+        df = yf.download(tickers, period='5d', interval='1m', group_by='ticker', progress=False)
         
         for ticker in tickers:
-            if ticker in bars.data:
-                df = pd.DataFrame([
-                    {'timestamp': b.timestamp, 'open': b.open, 'high': b.high, 'low': b.low, 'close': b.close, 'volume': b.volume}
-                    for b in bars.data[ticker]
-                ])
-                if not df.empty:
-                    for col in ['open', 'high', 'low', 'close', 'volume']:
-                        df[col] = df[col].astype(np.float32)
-                    df.set_index('timestamp', inplace=True)
-                    data_cache[ticker] = df.tail(200) # Keep last 200 bars in memory
-                    log.info(f"Preloaded {len(data_cache[ticker])} bars for {ticker}")
-    except Exception as e:
-        log.error(f"Failed to preload history via Alpaca: {e}")
-        log.info("Attempting Yahoo Finance bulk download fallback for preloading 1-minute bars...")
-        try:
-            import yfinance as yf
-            # Single bulk download instead of sequential loops (Phase-2 Startup Optimization)
-            df = yf.download(tickers, period='5d', interval='1m', group_by='ticker', progress=False)
-            
-            for ticker in tickers:
-                ticker_df = None
-                if len(tickers) == 1:
-                    ticker_df = df.copy()
-                elif ticker in df.columns.get_level_values(0):
-                    ticker_df = df[ticker].copy()
-                    
-                if ticker_df is not None and not ticker_df.empty:
-                    ticker_df.rename(columns={
-                        'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'
-                    }, inplace=True)
-                    for col in ['open', 'high', 'low', 'close', 'volume']:
-                        ticker_df[col] = ticker_df[col].astype(np.float32)
-                    ticker_df.index = pd.to_datetime(ticker_df.index)
-                    if ticker_df.index.tz is None:
-                        ticker_df = ticker_df.tz_localize('UTC')
-                    else:
-                        ticker_df = ticker_df.tz_convert('UTC')
-                    
-                    data_cache[ticker] = ticker_df.tail(200)
-                    log.info(f"  [yfinance bulk] Preloaded {len(data_cache[ticker])} bars for {ticker}")
-        except Exception as yf_err:
-            log.error(f"  [yfinance bulk] Bulk preloading failed: {yf_err}")
+            ticker_df = None
+            if len(tickers) == 1:
+                ticker_df = df.copy()
+            elif ticker in df.columns.get_level_values(0):
+                ticker_df = df[ticker].copy()
+                
+            if ticker_df is not None and not ticker_df.empty:
+                ticker_df.rename(columns={
+                    'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'
+                }, inplace=True)
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    ticker_df[col] = ticker_df[col].astype(np.float32)
+                ticker_df.index = pd.to_datetime(ticker_df.index)
+                if ticker_df.index.tz is None:
+                    ticker_df = ticker_df.tz_localize('UTC')
+                else:
+                    ticker_df = ticker_df.tz_convert('UTC')
+                
+                data_cache[ticker] = ticker_df.tail(200)
+                log.info(f"  [yfinance bulk] Preloaded {len(data_cache[ticker])} bars for {ticker}")
+    except Exception as yf_err:
+        log.error(f"  [yfinance bulk] Bulk preloading failed: {yf_err}")
 
 # Alternative Data Cache
 alt_data_cache = {}
@@ -145,15 +146,16 @@ def on_alt_data_update(event: Event):
 # Register listener
 event_bus.subscribe(Topics.ALT_DATA_UPDATE, on_alt_data_update)
 
-async def handle_bar(bar):
-    """Callback for Alpaca websocket when a new minute bar closes."""
-    ticker = bar.symbol
+def handle_bar_callback(symbol, broker_bar):
+    """Callback for broker when a new bar arrives (works for active broker)."""
+    ticker = symbol
     if ticker not in data_cache:
         data_cache[ticker] = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
         
     new_data = pd.DataFrame([{
-        'open': bar.open, 'high': bar.high, 'low': bar.low, 'close': bar.close, 'volume': bar.volume
-    }], index=[bar.timestamp])
+        'open': broker_bar.open, 'high': broker_bar.high, 'low': broker_bar.low,
+        'close': broker_bar.close, 'volume': broker_bar.volume
+    }], index=[broker_bar.timestamp])
     
     data_cache[ticker] = pd.concat([data_cache[ticker], new_data]).tail(200)
     df = data_cache[ticker].copy().astype(np.float32)
@@ -223,7 +225,7 @@ async def handle_bar(bar):
         log.error(f"Error saving features for {ticker}: {e}")
 
 def run_websocket_ingest():
-    log.info("Starting Websocket Ingest Engine (Intraday)...")
+    log.info(f"Starting Websocket Ingest Engine (Broker: {broker.name if broker else 'yfinance fallback'})...")
     tickers = get_watchlist()
     
     if not tickers:
@@ -233,21 +235,41 @@ def run_websocket_ingest():
     # Preload data
     preload_history(tickers)
     
-    try:
-        import sys
-        scripts_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'scripts')
-        sys.path.append(scripts_path)
-        from l2_feed_connector import L2FeedConnector
-        l2_conn = L2FeedConnector(tickers)
-        l2_conn.start()
-        log.info("🚀 Institutional L2 Tick Pipeline triggered concurrently.")
-    except Exception as e:
-        log.warning(f"Could not load concurrent L2 Feed Connector: {e}")
+    # Real-time minute bars are handled via the unified broker interface below
     
-    log.info(f"Subscribing to minute bars for {len(tickers)} tickers...")
-    stream.subscribe_bars(handle_bar, *tickers)
-    
-    stream.run()
+    # Subscribe to real-time bars via broker
+    if broker and broker.is_connected():
+        log.info(f"Subscribing to minute bars for {len(tickers)} tickers via {broker.name}...")
+        broker.subscribe_bars(tickers, handle_bar_callback)
+        broker.run_stream()
+    else:
+        log.warning("No broker connected. Running in yfinance polling fallback mode.")
+        import yfinance as yf
+        while True:
+            try:
+                for ticker in tickers:
+                    tk = yf.Ticker(ticker)
+                    hist = tk.history(period='1d', interval='1m')
+                    if not hist.empty:
+                        latest = hist.iloc[-1]
+                        from base_broker import BrokerBar
+                        bar = BrokerBar(
+                            timestamp=hist.index[-1],
+                            open=float(latest['Open']),
+                            high=float(latest['High']),
+                            low=float(latest['Low']),
+                            close=float(latest['Close']),
+                            volume=float(latest['Volume'])
+                        )
+                        handle_bar_callback(ticker, bar)
+                import time
+                time.sleep(60)  # Poll every minute
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                log.error(f"yfinance polling error: {e}")
+                import time
+                time.sleep(60)
 
 if __name__ == '__main__':
     run_websocket_ingest()

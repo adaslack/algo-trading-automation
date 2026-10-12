@@ -1,15 +1,23 @@
 """
-Pipeline Orchestrator (The Orchestrator)
-=========================================
+Pipeline Orchestrator (The Orchestrator) — Broker-Agnostic V2
+==============================================================
 Central process and thread manager for the US equities quant trading pipeline.
 Spawns all microservices, attaches event tracing, and monitors their health.
 If a thread or process crashes, the Orchestrator automatically restarts it.
+
+Supports: IBKR (via BROKER_TYPE in .env)
 """
 import subprocess
 import time
 import os
 import sys
 import threading
+
+# Add brokers to path for broker_factory imports
+_BROKERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'brokers')
+if _BROKERS_DIR not in sys.path:
+    sys.path.insert(0, _BROKERS_DIR)
+
 from logger import get_logger
 
 # Import standard oriented core modules to run as threads
@@ -17,6 +25,8 @@ from websocket_ingest import run_websocket_ingest
 from alpha_adapter import run_alpha_adapter
 from risk_manager import run_risk_manager
 from execution_engine import run_execution_engine
+from news_sentiment_ingest import run_news_ingest
+from sentiment_engine import run_sentiment_engine
 
 from event_bus import get_bus, Topics
 
@@ -26,6 +36,9 @@ def start_process(script_name):
     log.info(f"Booting Background Service: {script_name}...")
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
     return subprocess.Popen([sys.executable, script_path])
+
+# Create a global stop event for news ingestion
+_news_stop_event = threading.Event()
 
 def setup_event_tracer():
     """Logs the exact lifecycle of all major pipeline events."""
@@ -38,6 +51,8 @@ def setup_event_tracer():
                 details = f"Features Ready (OBI={event.data.get('features', {}).get('obi', 0):.2f})"
             elif event.source == "alpha_adapter":
                 details = f"{event.data.get('signal_type')} via {event.data.get('target_strategy')} (Conf: {event.data.get('confidence',0)*100:.0f}%)"
+            elif event.source == "sentiment_engine":
+                details = f"NEWS score: {event.data.get('sentiment_score', 0.0):+.2f} | Headline: '{event.data.get('headline', '')[:30]}...'"
             elif event.source == "risk_manager":
                 details = f"APPROVED (Kelly: {event.data.get('kelly_pct',0)*100:.1f}%)"
             elif event.source == "execution_engine":
@@ -50,7 +65,7 @@ def setup_event_tracer():
             pass
 
     # Subscribe tracer to major topics
-    for topic in [Topics.MARKET_UPDATE, Topics.SIGNAL_GENERATED, Topics.ORDER_APPROVED, Topics.ORDER_FILLED]:
+    for topic in [Topics.MARKET_UPDATE, Topics.SIGNAL_GENERATED, Topics.ORDER_APPROVED, Topics.ORDER_FILLED, Topics.NEWS_SENTIMENT_ALERT]:
         bus.subscribe(topic, trace)
     log.info("Visual Event Tracer Middleware attached.")
 
@@ -77,7 +92,9 @@ def run_orchestrator():
         "ExecutionEngine": run_execution_engine,
         "RiskManager": run_risk_manager,
         "AlphaAdapter": run_alpha_adapter,
-        "WebsocketIngest": run_websocket_ingest
+        "WebsocketIngest": run_websocket_ingest,
+        "SentimentEngine": run_sentiment_engine,
+        "NewsIngest": lambda: run_news_ingest(_news_stop_event)
     }
     
     log.info("Booting Core Event-Driven Threads with Recovery Watchdog...")

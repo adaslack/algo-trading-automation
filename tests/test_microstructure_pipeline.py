@@ -160,17 +160,61 @@ class TestMicrostructureEngine(unittest.TestCase):
         # 5. Test Risk Gate approval flow
         print("Testing Risk Gate approval flow...")
         
-        class MockAccount:
+        # Define mock classes compatible with V15 broker-agnostic models
+        class MockBrokerAccount:
             portfolio_value = 100000.0
             buying_power = 200000.0
-            
-        class MockTradingClient:
+
+        class MockBrokerQuote:
+            def __init__(self, bid, ask):
+                self.bid_price = bid
+                self.ask_price = ask
+                self.mid_price = (bid + ask) / 2.0
+
+        class MockBrokerOrderResult:
+            def __init__(self, order_id, symbol, qty, price, status, commission):
+                self.order_id = order_id
+                self.symbol = symbol
+                self.filled_qty = qty
+                self.filled_avg_price = price
+                self.status = status
+                self.commission = commission
+
+        class MockBroker:
+            name = "Interactive Brokers"
+            supports_fractional = True
+            commission_per_share = 0.005
+
+            def is_connected(self):
+                return True
+
+            def is_market_open(self):
+                return True
+
             def get_account(self):
-                return MockAccount()
-            def get_all_positions(self):
-                return []
-                
-        risk_manager.trading_client = MockTradingClient()
+                return MockBrokerAccount()
+
+            def get_positions(self):
+                return {}
+
+            def get_latest_quote(self, symbol):
+                return MockBrokerQuote(180.0, 180.0)
+
+            def place_order(self, order):
+                price = 185.0
+                if order.symbol == 'AAPL' and order.side == 'SELL':
+                    price = 195.0
+                return MockBrokerOrderResult(
+                    order_id="mock_order_123",
+                    symbol=order.symbol,
+                    qty=order.qty,
+                    price=price,
+                    status="filled",
+                    commission=1.0
+                )
+
+        mock_broker = MockBroker()
+        risk_manager.broker = mock_broker
         
         class MockDecision:
             approved = True
@@ -205,23 +249,7 @@ class TestMicrostructureEngine(unittest.TestCase):
         print("Testing Execution Engine DB Auditing & State Machine...")
         import execution_engine
         
-        class MockClock:
-            is_open = True
-            
-        class MockAlpacaOrder:
-            id = "mock_alpaca_order_123"
-            filled_avg_price = 185.0
-            
-        class MockTradingClientExecution:
-            def get_clock(self):
-                return MockClock()
-            def get_all_positions(self):
-                return []
-            def submit_order(self, order_data):
-                return MockAlpacaOrder()
-                
-        execution_engine.trading_client = MockTradingClientExecution()
-        execution_engine.data_client = None
+        execution_engine.broker = mock_broker
         execution_engine.DB_PATH = DB_PATH
         
         # Trigger opening order fill execution
@@ -247,7 +275,6 @@ class TestMicrostructureEngine(unittest.TestCase):
         self.conn.commit()
         
         # Trigger closing order fill execution
-        MockAlpacaOrder.filled_avg_price = 195.0
         execution_engine.on_order_approved(Event(source="risk_manager", data={
             'ticker': 'AAPL',
             'action': 'SELL',

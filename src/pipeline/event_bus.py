@@ -269,3 +269,5 @@ class Topics:
     CIRCUIT_BREAKER = "risk.circuit_breaker"
     PORTFOLIO_UPDATE = "portfolio.update"
     STRATEGY_REBALANCE = "strategy.rebalance"
+    NEWS_ARRIVED = "news.arrived"
+    NEWS_SENTIMENT_ALERT = "news.sentiment_alert"

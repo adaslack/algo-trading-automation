@@ -26,7 +26,9 @@ import concurrent.futures
 from datetime import datetime
 
 # Adjust paths to import src/pipeline modules
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'pipeline'))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(_ROOT, 'src', 'pipeline'))
+sys.path.append(os.path.join(_ROOT, 'src', 'brokers'))
 
 from alpha_engine import AlphaEngine, AlphaOutput
 from portfolio    import BayesianPortfolio
@@ -61,12 +63,12 @@ CANDIDATE_POOL = [
     'AMD', 'INTC', 'PYPL', 'QCOM', 'TXN', 'DIS', 'SBUX', 'NKE', 'SCHW', 'CVS',
     # Mid Caps
     'DBX', 'GPRO', 'RBLX', 'RUN', 'HOOD', 'CHWY', 'PLUG', 'UPST', 'AFRM', 'SOFI',
-    # Small Caps
-    'BLNK', 'RIOT', 'MARA', 'HUT', 'LAZR', 'NKLA', 'APPS', 'CLSK', 'WKHS', 'SPWR',
-    # Micro Caps
-    'EVGO', 'HYLN', 'IVR', 'CEI', 'MMAT', 'MULN', 'XELA', 'AEON', 'WTI', 'SCPL',
-    # Nano Caps
-    'HUSA', 'METX', 'SINT', 'PHUN', 'OPTT', 'BIOL', 'TOPS', 'SHIP', 'GLBS', 'EDSA'
+    # Small Caps (V16: replaced delisted NKLA, LAZR with RIVN, IONQ)
+    'BLNK', 'RIOT', 'MARA', 'HUT', 'IONQ', 'RIVN', 'APPS', 'CLSK', 'WKHS', 'SPWR',
+    # Micro Caps (V16: replaced delisted CEI, MMAT, MULN, SCPL with SOUN, DNA, LCID, SMCI)
+    'EVGO', 'HYLN', 'IVR', 'SOUN', 'DNA', 'LCID', 'XELA', 'AEON', 'WTI', 'SMCI',
+    # Nano Caps (V16: replaced delisted HUSA, METX, BIOL with BTDR, LUNR, CLOV)
+    'BTDR', 'LUNR', 'SINT', 'PHUN', 'OPTT', 'CLOV', 'TOPS', 'SHIP', 'GLBS', 'EDSA'
 ]
 
 # Hardcoded Metadata Fallback Table
@@ -107,6 +109,8 @@ METADATA_FALLBACK = {
     'HUT': {'marketCap': 650_000_000, 'sector': 'Technology'},
     'LAZR': {'marketCap': 550_000_000, 'sector': 'Technology'},
     'NKLA': {'marketCap': 400_000_000, 'sector': 'Consumer Cyclical'},
+    'RIVN': {'marketCap': 12_000_000_000, 'sector': 'Consumer Cyclical'},
+    'IONQ': {'marketCap': 5_000_000_000, 'sector': 'Technology'},
     'APPS': {'marketCap': 350_000_000, 'sector': 'Technology'},
     'CLSK': {'marketCap': 1_200_000_000, 'sector': 'Technology'},
     'WKHS': {'marketCap': 320_000_000, 'sector': 'Industrials'},
@@ -114,18 +118,25 @@ METADATA_FALLBACK = {
     'EVGO': {'marketCap': 280_000_000, 'sector': 'Consumer Cyclical'},
     'HYLN': {'marketCap': 150_000_000, 'sector': 'Industrials'},
     'IVR': {'marketCap': 220_000_000, 'sector': 'Financial Services'},
+    'SOUN': {'marketCap': 3_000_000_000, 'sector': 'Technology'},
+    'DNA': {'marketCap': 1_500_000_000, 'sector': 'Healthcare'},
+    'LCID': {'marketCap': 6_500_000_000, 'sector': 'Consumer Cyclical'},
     'CEI': {'marketCap': 80_000_000, 'sector': 'Energy'},
     'MMAT': {'marketCap': 95_000_000, 'sector': 'Technology'},
     'MULN': {'marketCap': 55_000_000, 'sector': 'Consumer Cyclical'},
     'XELA': {'marketCap': 60_000_000, 'sector': 'Technology'},
     'AEON': {'marketCap': 120_000_000, 'sector': 'Healthcare'},
     'WTI': {'marketCap': 290_000_000, 'sector': 'Energy'},
+    'SMCI': {'marketCap': 15_000_000_000, 'sector': 'Technology'},
     'SCPL': {'marketCap': 210_000_000, 'sector': 'Technology'},
+    'BTDR': {'marketCap': 1_200_000_000, 'sector': 'Technology'},
+    'LUNR': {'marketCap': 2_500_000_000, 'sector': 'Industrials'},
     'HUSA': {'marketCap': 15_000_000, 'sector': 'Energy'},
     'METX': {'marketCap': 12_000_000, 'sector': 'Education'},
     'SINT': {'marketCap': 8_000_000, 'sector': 'Industrials'},
     'PHUN': {'marketCap': 35_000_000, 'sector': 'Technology'},
     'OPTT': {'marketCap': 18_000_000, 'sector': 'Industrials'},
+    'CLOV': {'marketCap': 1_800_000_000, 'sector': 'Healthcare'},
     'BIOL': {'marketCap': 9_000_000, 'sector': 'Healthcare'},
     'TOPS': {'marketCap': 5_000_000, 'sector': 'Industrials'},
     'SHIP': {'marketCap': 22_000_000, 'sector': 'Industrials'},
@@ -350,7 +361,38 @@ def main():
             if last_pos < 252:
                 continue
             
-            features = compute_real_features(arrays['close'], arrays['volume'], last_pos)
+            # V16: Fetch high-fidelity pre-computed features from metrics cache if available
+            features = None
+            try:
+                import ml_ranker
+                cache_key = tuple(sorted(ticker_arrays.keys()))
+                if cache_key in ml_ranker._metrics_cache:
+                    all_metrics, _ = ml_ranker._metrics_cache[cache_key]
+                    spy_dates = list(data['SPY'].index.strftime('%Y-%m-%d'))
+                    if day in spy_dates and ticker in all_metrics:
+                        t_idx = spy_dates.index(day)
+                        feat_idx = t_idx - 1
+                        if feat_idx >= 0:
+                            features = {
+                                'close': float(arrays['close'][last_pos]),
+                                'momentum_12_1': float(all_metrics[ticker]['momentum_12_1'][feat_idx]),
+                                'reversal_5d': float(all_metrics[ticker]['reversal_5d'][feat_idx]),
+                                'vol_regime': float(all_metrics[ticker]['vol_regime'][feat_idx]),
+                                'volume_breakout': float(all_metrics[ticker]['volume_breakout'][feat_idx]),
+                                'rolling_beta': float(all_metrics[ticker]['rolling_beta'][feat_idx]),
+                                'volatility_expansion': float(all_metrics[ticker]['volatility_expansion'][feat_idx]),
+                                'drawdown_depth': float(all_metrics[ticker]['drawdown_depth'][feat_idx]),
+                                'sector_relative_strength': float(all_metrics[ticker]['sector_relative_strength'][feat_idx]),
+                                'garch_volatility': float(all_metrics[ticker]['realized_volatility'][feat_idx]),
+                                'volume_ratio': float(arrays['volume'][last_pos] / np.mean(arrays['volume'][max(0, last_pos-20):last_pos])) if last_pos > 0 else 1.0,
+                                'dollar_vol_20d': float(np.mean(arrays['close'][max(0, last_pos-20):last_pos] * arrays['volume'][max(0, last_pos-20):last_pos])) if last_pos > 0 else 1e6
+                            }
+            except Exception:
+                features = None
+                
+            if features is None:
+                features = compute_real_features(arrays['close'], arrays['volume'], last_pos)
+                
             if features is None:
                 continue
                 
@@ -414,8 +456,8 @@ def main():
                     for d_str, d_idx in dtm.items():
                         if d_str < day and d_idx > last_pos:
                             last_pos = d_idx
-                if last_pos >= 9:
-                    start_pos = max(0, last_pos - 9)
+                if last_pos >= 19:
+                    start_pos = max(0, last_pos - 19)
                     price_history[t] = list(arrays['close'][start_pos:last_pos+1])
                 
         allocations = portfolio.size_portfolio(alpha_outputs, price_history, portfolio_value)
@@ -489,7 +531,7 @@ def main():
         
     # 4. Generate Final Performance Audit Report
     print("\n" + "=" * 80)
-    print("  INSTITUTIONAL QUANT PERFORMANCE AUDIT REPORT (V13 REAL FACTORS - OPTIMIZED)")
+    print("  INSTITUTIONAL QUANT PERFORMANCE AUDIT REPORT (V16 ALPHA BEAST)")
     print("=" * 80)
     
     total_return_pct = (portfolio_value - 100000.0) / 100000.0 * 100
@@ -499,29 +541,83 @@ def main():
     std_ret = np.std(daily_returns) if len(daily_returns) > 1 else 1e-6
     sharpe = (avg_ret / max(std_ret, 1e-8)) * np.sqrt(252) if len(daily_returns) > 0 else 0.0
     
+    # Sortino Ratio (downside deviation only)
+    downside_returns = daily_returns[daily_returns < 0]
+    downside_std = np.std(downside_returns) if len(downside_returns) > 1 else 1e-6
+    sortino = (avg_ret / max(downside_std, 1e-8)) * np.sqrt(252) if len(daily_returns) > 0 else 0.0
+    
     trades_df = pd.DataFrame(realized_trades)
     
     if not trades_df.empty:
         wins = trades_df[trades_df['net_ret'] > 0]
+        losses = trades_df[trades_df['net_ret'] <= 0]
         win_rate = len(wins) / len(trades_df) * 100
+        
+        # Profit Factor
+        gross_wins = trades_df[trades_df['pnl'] > 0]['pnl'].sum()
+        gross_losses = abs(trades_df[trades_df['pnl'] < 0]['pnl'].sum())
+        profit_factor = gross_wins / max(gross_losses, 1e-6)
+        
+        # Average win/loss
+        avg_win = wins['net_ret'].mean() * 100 if len(wins) > 0 else 0.0
+        avg_loss = losses['net_ret'].mean() * 100 if len(losses) > 0 else 0.0
     else:
         win_rate = 0.0
+        profit_factor = 0.0
+        avg_win = 0.0
+        avg_loss = 0.0
         
     values_arr = np.array(daily_values)
     peaks = np.maximum.accumulate(values_arr)
     drawdowns = (values_arr - peaks) / peaks
     max_dd = np.min(drawdowns) * 100 if len(drawdowns) > 0 else 0.0
     
+    # Calmar Ratio (annualized return / max drawdown)
+    ann_return = avg_ret * 252 * 100
+    calmar = abs(ann_return / max(abs(max_dd), 1e-6)) if max_dd != 0 else 0.0
+    
     print(f"🏆  Total Net Return       : {total_return_pct:+.2f}%")
+    print(f"📈  Annualized Return      : {ann_return:+.2f}%")
     print(f"📊  Annualized Sharpe Ratio : {sharpe:.2f}")
+    print(f"📊  Sortino Ratio           : {sortino:.2f}")
+    print(f"📊  Calmar Ratio            : {calmar:.2f}")
     print(f"📉  Max Peak-to-Trough DD   : {max_dd:.2f}%")
     print(f"🎯  Trade Win Rate          : {win_rate:.1f}%")
+    print(f"💰  Profit Factor           : {profit_factor:.2f}")
+    print(f"📈  Avg Win                 : {avg_win:+.3f}%")
+    print(f"📉  Avg Loss                : {avg_loss:+.3f}%")
     print(f"📈  Total Recorded Fills    : {len(trades_df)}")
+    print(f"📅  Average Daily Return    : {avg_ret*100:+.4f}%")
+    print(f"📅  Daily Return Volatility : {std_ret*100:.4f}%")
     print("=" * 80)
+    
+    # Monthly Breakdown
+    if not trades_df.empty:
+        print("\n📅 MONTHLY PERFORMANCE BREAKDOWN:")
+        print("-" * 60)
+        trades_df['month'] = pd.to_datetime(trades_df['date']).dt.to_period('M')
+        monthly = trades_df.groupby('month').agg(
+            trades=('pnl', 'count'),
+            total_pnl=('pnl', 'sum'),
+            win_rate=('net_ret', lambda x: (x > 0).mean() * 100),
+            avg_return=('net_ret', 'mean')
+        )
+        for month, row in monthly.iterrows():
+            print(f"  {month} | Trades: {row['trades']:3.0f} | PnL: ${row['total_pnl']:+,.2f} | WR: {row['win_rate']:.1f}% | Avg Ret: {row['avg_return']*100:+.3f}%")
+        print("-" * 60)
     
     os.makedirs("data", exist_ok=True)
     trades_df.to_csv("data/paper_trades.csv", index=False)
     print("Historical fills successfully exported to: data/paper_trades.csv")
+    
+    # Export equity curve
+    equity_df = pd.DataFrame({
+        'date': ['start'] + backtest_days[:len(daily_values)-1],
+        'portfolio_value': daily_values,
+        'daily_return': [0.0] + list(daily_returns)
+    })
+    equity_df.to_csv("data/equity_curve.csv", index=False)
+    print("Equity curve exported to: data/equity_curve.csv")
 
 if __name__ == '__main__':
     main()

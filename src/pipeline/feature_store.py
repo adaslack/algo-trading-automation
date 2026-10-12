@@ -134,6 +134,19 @@ class FeatureStore:
         vol_ratio_raw = float(volumes[day_idx]) / vol_20d_avg if vol_20d_avg > 0 else 1.0
         dollar_vol_20d = float(np.mean(close_prices[day_idx-20:day_idx] * volumes[day_idx-20:day_idx]))
         
+        # V16: Calculate newly added alpha features for real-time and backtest continuity
+        # Volatility Expansion
+        vol_exp = vol_5d / (vol_20d + 1e-9)
+        volatility_expansion = float(np.clip(vol_exp, 0.1, 5.0))
+        
+        # Drawdown Depth (20d window)
+        max_p = np.max(close_prices[day_idx-20:day_idx+1])
+        drawdown_depth = float(np.clip((close - max_p) / (max_p + 1e-9), -1.0, 0.0))
+        
+        # Rolling Beta and Sector Relative Strength fallbacks (updated dynamically by adapter/sentiment engines)
+        rolling_beta = 1.0
+        sector_relative_strength = 0.0
+        
         return {
             'close': close,
             'momentum_12_1': float(np.clip(momentum_12_1, -1.0, 1.0)),
@@ -144,6 +157,10 @@ class FeatureStore:
             'garch_volatility': garch_vol,
             'volume_ratio': vol_ratio_raw,
             'dollar_vol_20d': dollar_vol_20d,
+            'volatility_expansion': volatility_expansion,
+            'drawdown_depth': drawdown_depth,
+            'rolling_beta': rolling_beta,
+            'sector_relative_strength': sector_relative_strength
         }
 
     # Institutional Versioned Feature Registry & Lineage

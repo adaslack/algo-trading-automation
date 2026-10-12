@@ -21,7 +21,9 @@ import concurrent.futures
 from datetime import datetime
 
 # Adjust paths to import src/pipeline modules
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'pipeline'))
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(_ROOT, 'src', 'pipeline'))
+sys.path.append(os.path.join(_ROOT, 'src', 'brokers'))
 
 from alpha_engine import AlphaEngine, AlphaOutput
 from portfolio    import BayesianPortfolio
@@ -42,12 +44,12 @@ CANDIDATE_POOL = [
     'AMD', 'INTC', 'PYPL', 'QCOM', 'TXN', 'DIS', 'SBUX', 'NKE', 'SCHW', 'CVS',
     # Mid Caps
     'DBX', 'GPRO', 'RBLX', 'RUN', 'HOOD', 'CHWY', 'PLUG', 'UPST', 'AFRM', 'SOFI',
-    # Small Caps
-    'BLNK', 'RIOT', 'MARA', 'HUT', 'LAZR', 'NKLA', 'APPS', 'CLSK', 'WKHS', 'SPWR',
-    # Micro Caps
-    'EVGO', 'HYLN', 'IVR', 'CEI', 'MMAT', 'MULN', 'XELA', 'AEON', 'WTI', 'SCPL',
-    # Nano Caps
-    'HUSA', 'METX', 'SINT', 'PHUN', 'OPTT', 'BIOL', 'TOPS', 'SHIP', 'GLBS', 'EDSA'
+    # Small Caps (V16: replaced delisted NKLA, LAZR with RIVN, IONQ)
+    'BLNK', 'RIOT', 'MARA', 'HUT', 'IONQ', 'RIVN', 'APPS', 'CLSK', 'WKHS', 'SPWR',
+    # Micro Caps (V16: replaced delisted CEI, MMAT, MULN, SCPL with SOUN, DNA, LCID, SMCI)
+    'EVGO', 'HYLN', 'IVR', 'SOUN', 'DNA', 'LCID', 'XELA', 'AEON', 'WTI', 'SMCI',
+    # Nano Caps (V16: replaced delisted HUSA, METX, BIOL with BTDR, LUNR, CLOV)
+    'BTDR', 'LUNR', 'SINT', 'PHUN', 'OPTT', 'CLOV', 'TOPS', 'SHIP', 'GLBS', 'EDSA'
 ]
 
 # Hardcoded Metadata Fallback Table (bulletproof recovery from Yahoo Finance api limits)
@@ -361,10 +363,41 @@ def main():
                 if last_pos < 252:  # Need 252 days for momentum
                     continue
                 
-                features = compute_real_features(arrays['close'], arrays['volume'], last_pos)
+                # V16: Fetch high-fidelity pre-computed features from metrics cache if available
+                features = None
+                try:
+                    import ml_ranker
+                    cache_key = tuple(sorted(ticker_arrays.keys()))
+                    if cache_key in ml_ranker._metrics_cache:
+                        all_metrics, _ = ml_ranker._metrics_cache[cache_key]
+                        spy_dates = list(data['SPY'].index.strftime('%Y-%m-%d'))
+                        if day in spy_dates and ticker in all_metrics:
+                            t_idx = spy_dates.index(day)
+                            feat_idx = t_idx - 1
+                            if feat_idx >= 0:
+                                features = {
+                                    'close': float(arrays['close'][last_pos]),
+                                    'momentum_12_1': float(all_metrics[ticker]['momentum_12_1'][feat_idx]),
+                                    'reversal_5d': float(all_metrics[ticker]['reversal_5d'][feat_idx]),
+                                    'vol_regime': float(all_metrics[ticker]['vol_regime'][feat_idx]),
+                                    'volume_breakout': float(all_metrics[ticker]['volume_breakout'][feat_idx]),
+                                    'rolling_beta': float(all_metrics[ticker]['rolling_beta'][feat_idx]),
+                                    'volatility_expansion': float(all_metrics[ticker]['volatility_expansion'][feat_idx]),
+                                    'drawdown_depth': float(all_metrics[ticker]['drawdown_depth'][feat_idx]),
+                                    'sector_relative_strength': float(all_metrics[ticker]['sector_relative_strength'][feat_idx]),
+                                    'garch_volatility': float(all_metrics[ticker]['realized_volatility'][feat_idx]),
+                                    'volume_ratio': float(arrays['volume'][last_pos] / np.mean(arrays['volume'][max(0, last_pos-20):last_pos])) if last_pos > 0 else 1.0,
+                                    'dollar_vol_20d': float(np.mean(arrays['close'][max(0, last_pos-20):last_pos] * arrays['volume'][max(0, last_pos-20):last_pos])) if last_pos > 0 else 1e6
+                                }
+                except Exception:
+                    features = None
+                    
+                if features is None:
+                    features = compute_real_features(arrays['close'], arrays['volume'], last_pos)
+                    
                 if features is None:
                     continue
-                
+                    
                 # Cache features for reuse in alpha evaluation step
                 day_feature_cache[ticker] = (features, last_pos)
                     
@@ -441,8 +474,8 @@ def main():
                         for d_str, d_idx in dtm.items():
                             if d_str < day and d_idx > last_pos:
                                 last_pos = d_idx
-                    if last_pos >= 9:
-                        start_pos = max(0, last_pos - 9)
+                    if last_pos >= 19:
+                        start_pos = max(0, last_pos - 19)
                         price_history[t] = list(arrays['close'][start_pos:last_pos+1])
                     
             allocations = portfolio.size_portfolio(alpha_outputs, price_history, portfolio_value)

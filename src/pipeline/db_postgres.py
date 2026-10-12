@@ -42,19 +42,47 @@ def init_pool():
             log.critical(f"Failed to initialize PostgreSQL connection pool: {e}")
             raise
 
+class PooledConnectionProxy:
+    """Proxy that automatically returns a connection to the pool when close() is called."""
+    def __init__(self, conn, pool):
+        self._conn = conn
+        self._pool = pool
+        
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+        
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        
+    def close(self):
+        if self._pool and self._conn:
+            try:
+                self._pool.putconn(self._conn)
+            except Exception as e:
+                log.error(f"Error returning connection to pool: {e}")
+            self._conn = None
+            self._pool = None
+
 def get_connection():
-    """Get a connection from the connection pool."""
+    """Get a connection from the connection pool, wrapped in a proxy."""
     global _pool_instance
     if _pool_instance is None:
         init_pool()
-    return _pool_instance.getconn()
+    conn = _pool_instance.getconn()
+    return PooledConnectionProxy(conn, _pool_instance)
 
 def release_connection(conn):
     """Release a connection back to the pool."""
     global _pool_instance
     if _pool_instance and conn:
         try:
-            _pool_instance.putconn(conn)
+            # If it's a proxy, extract the underlying connection
+            raw_conn = conn._conn if isinstance(conn, PooledConnectionProxy) else conn
+            if raw_conn:
+                _pool_instance.putconn(raw_conn)
         except Exception as e:
             log.error(f"Error returning connection to pool: {e}")
 

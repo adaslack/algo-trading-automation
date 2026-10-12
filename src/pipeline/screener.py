@@ -1,34 +1,28 @@
 """
-Institutional Multi-Cap Diversified Screener (V11.5 Upgrade)
-============================================================
+Institutional Multi-Cap Diversified Screener (V11.5 - Broker-Agnostic V2)
+=========================================================================
 Runs once per day before market open to identify candidate equities.
 Dynamically scans the US stock market and classifies assets into 6 distinct
 market capitalization tiers to guarantee deep statistical coverage.
 
-Market Cap Brackets:
-  1. Mega Cap  : $200B and more
-  2. Large Cap : $10B to $200B
-  3. Mid Cap   : $2B to $10B
-  4. Small Cap : $300M to $2B
-  5. Micro Cap : $50M to $300M
-  6. Nano Cap  : under $50M
-
-Optimized for Stage 1 (16GB RAM + 4 Cores) systems:
-- Universe constrained to exactly 5 picks per tier = 30 assets + anchor (SPY).
-- Implements active sector-diversification constraints to prevent correlation traps.
-- Leverages concurrent ThreadPoolExecutor for high-frequency yfinance queries.
+Now supports IBKR via the unified broker interface,
+with yfinance fallback for market cap and sector data.
 """
 
 import os
+import sys
 import sqlite3
 import yfinance as yf
 import concurrent.futures
 from dotenv import load_dotenv
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import GetAssetsRequest
-from alpaca.trading.enums import AssetClass, AssetStatus
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockSnapshotRequest
+
+# Add brokers to path
+_BROKERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'brokers')
+if _BROKERS_DIR not in sys.path:
+    sys.path.insert(0, _BROKERS_DIR)
+
+from broker_factory import get_broker
+
 from logger import get_logger
 
 log = get_logger("Screener")
@@ -51,9 +45,13 @@ def fetch_ticker_data(ticker):
         info = yf.Ticker(ticker).info
         market_cap = info.get('marketCap', 0) or 0
         sector = info.get('sector', 'Unknown')
-        return ticker, market_cap, sector
+        avg_vol = info.get('averageVolume', 1000000) or 1000000
+        prev_close = info.get('previousClose', 10.0) or 10.0
+        dollar_vol = avg_vol * prev_close
+        company_name = info.get('longName') or info.get('shortName') or ticker
+        return ticker, market_cap, sector, dollar_vol, company_name
     except Exception:
-        return ticker, 0, 'Unknown'
+        return ticker, 0, 'Unknown', 0, ticker
 
 def select_sector_diversified_picks(candidates, max_picks=5):
     """
@@ -92,46 +90,50 @@ def run_screener():
     log.info("=" * 60)
     
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env'))
-    API_KEY = os.getenv('ALPACA_API_KEY')
-    SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
     
-    if not API_KEY or not SECRET_KEY:
-        log.error("Alpaca keys missing. Cannot run screener.")
-        return
+    # Get broker and fetch tradable assets
+    broker = None
+    try:
+        broker = get_broker(auto_connect=True)
+        log.info(f"Screener using broker: {broker.name}")
+    except Exception as e:
+        log.warning(f"Could not connect broker for screener: {e}")
     
-    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-    data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    candidates = []
     
-    log.info("Fetching all active US equities from Alpaca...")
-    req = GetAssetsRequest(asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE)
-    assets = trading_client.get_all_assets(req)
-    
-    # Filter for marginable and fractionable stocks
-    valid_symbols = [a.symbol for a in assets if a.tradable and a.marginable and a.fractionable]
-    log.info(f"Found {len(valid_symbols)} tradable/fractionable US stocks.")
-    
-    log.info("Querying volume data for liquidity filtering...")
-    
-    # Chunk requests to avoid Alpaca URL length limits (Chunk by 500)
-    chunk_size = 500
-    volumes = {}
-    
-    for i in range(0, len(valid_symbols), chunk_size):
-        chunk = valid_symbols[i:i+chunk_size]
+    if broker and broker.is_connected():
+        log.info(f"Fetching tradable US equities from {broker.name}...")
         try:
-            snap_req = StockSnapshotRequest(symbol_or_symbols=chunk)
-            snapshots = data_client.get_stock_snapshot(snap_req)
-            for symbol, snap in snapshots.items():
-                if snap.previous_daily_bar:
-                    volumes[symbol] = snap.previous_daily_bar.volume * snap.previous_daily_bar.close
-        except Exception:
-            pass
-            
-    # Sort by dollar volume descending, take top 250 candidates
-    sorted_tickers = sorted(volumes.keys(), key=lambda x: volumes[x], reverse=True)
-    candidates = sorted_tickers[:250]
+            assets = broker.get_tradable_assets()
+            valid_symbols = [a.symbol for a in assets if a.tradable]
+            log.info(f"Found {len(valid_symbols)} tradable US stocks via {broker.name}.")
+            # Take top 250 by name (we'll sort by volume via yfinance)
+            candidates = valid_symbols[:250]
+        except Exception as e:
+            log.warning(f"Failed to get assets from broker: {e}")
     
-    log.info(f"Pre-filtered to top {len(candidates)} candidates by dollar volume.")
+    if not candidates:
+        # Fallback: use a curated list of liquid US equities
+        log.info("Using curated fallback universe for screening...")
+        import yfinance as yf
+        # Get S&P 500 + popular liquid stocks
+        try:
+            import pandas as pd
+            sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+            sp500_table = pd.read_html(sp500_url)
+            candidates = sp500_table[0]['Symbol'].str.replace('.', '-').tolist()[:250]
+        except Exception:
+            candidates = [
+                'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
+                'JPM', 'V', 'UNH', 'MA', 'HD', 'PG', 'XOM', 'JNJ', 'COST', 'ABBV',
+                'MRK', 'CVX', 'KO', 'PEP', 'AVGO', 'LLY', 'TMO', 'WMT', 'MCD',
+                'CSCO', 'ACN', 'ABT', 'DHR', 'TXN', 'NEE', 'PM', 'VZ', 'UPS',
+                'RTX', 'HON', 'INTC', 'QCOM', 'LOW', 'INTU', 'SPGI', 'BA', 'GE',
+                'AMD', 'CAT', 'BLK', 'DE', 'AMAT', 'ISRG', 'ADP', 'GILD', 'MDLZ',
+                'SYK', 'ADI', 'TJX', 'MMC', 'BKNG', 'CI', 'CVS', 'LRCX', 'ZTS',
+            ]
+    
+    log.info(f"Pre-filtered to {len(candidates)} candidates.")
     log.info("Fetching Market Cap & Sector data concurrently from Yahoo Finance...")
     
     # Initialize cap bracket queues
@@ -145,8 +147,9 @@ def run_screener():
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
         results = list(executor.map(fetch_ticker_data, candidates))
         
-    for ticker, market_cap, sector in results:
-        dollar_vol = volumes.get(ticker, 0)
+    company_names = {}
+    for ticker, market_cap, sector, dollar_vol, company_name in results:
+        company_names[ticker] = company_name
         entry = (ticker, sector, dollar_vol)
         
         if market_cap >= MEGA_CAP:
@@ -195,12 +198,58 @@ def run_screener():
     import db_adapter
     conn = db_adapter.get_connection()
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM daily_watchlist')
+    
+    use_postgres = bool(os.getenv("DB_HOST"))
+    def run_sql(sql, params=None):
+        if use_postgres:
+            sql = sql.replace('?', '%s')
+        cursor.execute(sql, params or ())
+        
+    run_sql('DELETE FROM daily_watchlist')
+    
+    # Anchor name
+    company_names['SPY'] = 'SPDR S&P 500 ETF Trust'
     
     for ticker, sector in watchlist:
+        name = company_names.get(ticker, ticker)
         # DuckDB and Postgres both support standard ON CONFLICT clauses
-        cursor.execute('INSERT INTO daily_watchlist (ticker, sector) VALUES (?, ?) ON CONFLICT DO NOTHING', (ticker, sector))
+        run_sql('INSERT INTO daily_watchlist (ticker, sector, company_name) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', (ticker, sector, name))
         
+    # Calculate pairwise correlation matrix offline
+    log.info("Calculating pairwise correlation matrix offline for all watchlist assets...")
+    try:
+        import yfinance as yf
+        import pandas as pd
+        
+        tickers_list = [t[0] for t in watchlist]
+        df = yf.download(tickers_list, period='30d', interval='1d', progress=False)
+        
+        if isinstance(df.columns, pd.MultiIndex) and 'Close' in df.columns:
+            close_df = df['Close']
+        elif 'Close' in df.columns:
+            close_df = df['Close']
+        else:
+            close_df = df
+            
+        corr_matrix = close_df.corr().fillna(0.0)
+        
+        run_sql('DELETE FROM watchlist_correlation')
+        
+        inserted_count = 0
+        for col_a in corr_matrix.columns:
+            for col_b in corr_matrix.columns:
+                if col_a < col_b:
+                    coef = float(corr_matrix.loc[col_a, col_b])
+                    run_sql(
+                        'INSERT INTO watchlist_correlation (ticker_a, ticker_b, correlation) VALUES (?, ?, ?)',
+                        (col_a, col_b, coef)
+                    )
+                    inserted_count += 1
+                    
+        log.info(f"Calculated and saved {inserted_count} correlation coefficients in database.")
+    except Exception as corr_err:
+        log.error(f"Failed to calculate and store correlation matrix offline: {corr_err}")
+
     try:
         conn.commit()
     except Exception:

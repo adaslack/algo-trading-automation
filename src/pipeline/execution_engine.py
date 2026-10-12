@@ -1,41 +1,42 @@
 """
-Execution Engine (The Sniper)
-==============================
+Execution Engine (The Sniper) — Broker-Agnostic V2
+====================================================
 Reads APPROVED orders from the event bus.
-Connects to Alpaca to execute live Market/Limit Orders.
-Logs the final trade and records fill analytics.
+Connects to the active broker (IBKR) via the unified BaseBroker interface.
+Executes live Market/Limit Orders. Logs the final trade and records fill analytics.
 """
 import sqlite3
 import time
 import datetime
 import os
+import sys
 import csv
 from dotenv import load_dotenv
 
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
+# Add brokers to path
+_BROKERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'brokers')
+if _BROKERS_DIR not in sys.path:
+    sys.path.insert(0, _BROKERS_DIR)
+
+from broker_factory import get_broker
+from base_broker import BrokerOrder, OrderSideEnum, OrderTypeEnum, TimeInForceEnum
+
 from logger import get_logger
+from paths import DB_PATH, TRADES_CSV, ENV_FILE
 
 log = get_logger("Execution Engine")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.db')
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'data', 'pipeline_trades.csv')
-LOG_FILE = os.path.abspath(LOG_FILE)
+LOG_FILE = TRADES_CSV
 
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env'))
-API_KEY = os.getenv('ALPACA_API_KEY')
-SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
+load_dotenv(ENV_FILE)
 
+# Initialize broker via factory (lazy — connects on first use)
+broker = None
 try:
-    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-    data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    broker = get_broker(auto_connect=True)
+    log.info(f"Execution Engine using broker: {broker.name}")
 except Exception as e:
-    trading_client = None
-    data_client = None
-    log.error(f"Could not connect to Alpaca: {e}")
+    log.error(f"Could not initialize broker: {e}")
 
 import threading
 
@@ -57,14 +58,14 @@ def init_logger():
     if not os.path.exists(LOG_FILE):
         with open(LOG_FILE, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['timestamp', 'ticker', 'action', 'qty', 'estimated_price', 'alpaca_order_id'])
+            writer.writerow(['timestamp', 'ticker', 'action', 'qty', 'estimated_price', 'order_id', 'broker', 'commission'])
 
-def log_trade(ticker, action, qty, price, order_id):
+def log_trade(ticker, action, qty, price, order_id, broker_name, commission):
     with open(LOG_FILE, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerow([
             datetime.datetime.now().isoformat(),
-            ticker, action, qty, f'{price:.2f}', order_id
+            ticker, action, qty, f'{price:.2f}', order_id, broker_name, f'{commission:.4f}'
         ])
 
 from event_bus import get_bus, Event, Topics
@@ -78,7 +79,8 @@ analytics = ExecutionAnalytics(DB_PATH)
 _processed_order_keys = set()
 
 def on_order_approved(event: Event):
-    if not trading_client:
+    if not broker or not broker.is_connected():
+        log.warning("Broker not connected — cannot execute orders")
         return
         
     order_data = event.data
@@ -107,7 +109,6 @@ def on_order_approved(event: Event):
     if hasattr(event_bus, '_redis') and event_bus._redis is not None:
         redis_key = f"idempotency:order_approved:{unique_sig}"
         try:
-            # Atomic SETNX with 60 second expiration
             acquired = event_bus._redis.set(redis_key, "executed", nx=True, ex=60)
             if not acquired:
                 is_duplicate = True
@@ -119,113 +120,108 @@ def on_order_approved(event: Event):
         return
         
     _processed_order_keys.add(unique_sig)
-    # Evict cache if it gets too large
     if len(_processed_order_keys) > 1000:
         _processed_order_keys.clear()
     # ----------------------------------------------------------------------------
     
     try:
-        clock = trading_client.get_clock()
-        if not clock.is_open:
+        # Check market hours via broker
+        if not broker.is_market_open():
             log.warning(f"Market closed. Dropping order for {ticker}.")
             return
             
-        side = OrderSide.BUY if action == 'BUY' else OrderSide.SELL
+        side = OrderSideEnum.BUY if action == 'BUY' else OrderSideEnum.SELL
         
-        # ADAPTIVE EXECUTION CHECK
+        # ADAPTIVE EXECUTION: Get latest quote from broker
         bid_price = price_estimate
         ask_price = price_estimate
         mid_price = price_estimate
         half_spread = 0.01
         
         try:
-            if data_client:
-                quote_req = StockLatestQuoteRequest(symbol_or_symbols=ticker)
-                quotes = data_client.get_stock_latest_quote(quote_req)
-                if ticker in quotes:
-                    q_data = quotes[ticker]
-                    if q_data.ask_price and q_data.bid_price and q_data.bid_price > 0:
-                        bid_price = float(q_data.bid_price)
-                        ask_price = float(q_data.ask_price)
-                        mid_price = (bid_price + ask_price) / 2.0
-                        half_spread = max(0.01, (ask_price - bid_price) / 2.0)
+            quote = broker.get_latest_quote(ticker)
+            if quote.bid_price > 0 and quote.ask_price > 0:
+                bid_price = quote.bid_price
+                ask_price = quote.ask_price
+                mid_price = quote.mid_price
+                half_spread = max(0.01, (ask_price - bid_price) / 2.0)
         except Exception as e:
-            log.warning(f"Could not check latest quote for Avellaneda pricing: {e}")
+            log.warning(f"Could not get latest quote for {ticker}: {e}")
             
-        # Get Current Inventory (q) for Avellaneda-Stoikov Reservation Pricing
+        # Get Current Inventory for Avellaneda-Stoikov Reservation Pricing
         inventory = 0.0
         try:
-            positions_list = trading_client.get_all_positions()
-            for p in positions_list:
-                if p.symbol == ticker:
-                    inventory = float(p.qty)
-                    break
+            positions = broker.get_positions()
+            if ticker in positions:
+                inventory = positions[ticker].qty
         except Exception as e:
-            log.warning(f"Could not fetch inventory for Avellaneda pricing: {e}")
+            log.warning(f"Could not fetch inventory for {ticker}: {e}")
             
-        # Get Volatility (sigma) from ATR, ADV, and VPIN using a SINGLE DB connection
+        # Get Volatility data from DB
         volatility = 0.02
         adv = 1000000.0
         daily_vol = 0.02
-        vpin = 0.3
         try:
             conn = _get_db_conn()
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT atr14, close_price, volume, volatility_20d, vpin '
+                'SELECT close_price, volume, garch_volatility, volume_ratio '
                 'FROM market_data WHERE ticker = ?', (ticker,)
             )
             row = cursor.fetchone()
             if row:
-                if row[0] and row[1] and row[1] > 0:
-                    volatility = float(row[0]) / float(row[1])
+                if row[0] and row[0] > 0:
+                    pass  # price already from broker quote
+                if row[1] and row[1] > 0:
+                    adv = float(row[1]) * 20.0
                 if row[2] and row[2] > 0:
-                    adv = float(row[2]) * 20.0  # Approximate 20-day ADV
+                    volatility = float(row[2])
                 if row[3] and row[3] > 0:
-                    daily_vol = float(row[3]) / 15.87  # Annualized to daily volatility
-                if row[4]:
-                    vpin = float(row[4])
+                    daily_vol = float(row[3]) / 15.87
         except Exception:
             pass
-        # Submit Order to Alpaca
-        try:
-            from alpaca.trading.requests import MarketOrderRequest
-            alpaca_order = trading_client.submit_order(
-                order_data=MarketOrderRequest(
-                    symbol=ticker,
-                    qty=qty,
-                    side=side,
-                    time_in_force=TimeInForce.DAY
-                )
-            )
-        except Exception as e:
-            log.warning(f"Alpaca submit failed (simulating fill): {e}")
-            alpaca_order = None
+
+        # Handle fractional shares for IBKR (integers only)
+        order_qty = qty
+        if not broker.supports_fractional:
+            order_qty = max(1, int(round(qty)))
+            if order_qty != qty:
+                log.info(f"Rounded qty from {qty} to {order_qty} (broker={broker.name} requires integers)")
+
+        # Submit Order via broker abstraction
+        broker_order = BrokerOrder(
+            symbol=ticker,
+            qty=order_qty,
+            side=side,
+            order_type=OrderTypeEnum.MARKET,
+            time_in_force=TimeInForceEnum.DAY
+        )
+        
+        result = broker.place_order(broker_order)
+        
+        if result.status in ('error', 'rejected'):
+            log.warning(f"Broker rejected order for {ticker}: status={result.status}")
+            return
 
         # Base execution friction (10 bps base slippage + inventory risk premium)
         gamma = 0.1
         inventory_risk = abs(inventory) * gamma * (volatility ** 2)
         total_friction_pct = 0.0010 + inventory_risk
             
-        # Adverse Selection Curve
+        # Adverse Selection Curve (simplified — removed dead VPIN dependency)
         fill_ratio = 1.0
-        if vpin > 0.5:
-            # Linear decay: at VPIN=0.8, we only get filled on 55% of our order size due to queue front-running
-            fill_ratio = max(0.1, 1.0 - (vpin - 0.5) * 1.5)
-            # Add toxic adverse selection premium to slippage (up to 15 bps extra penalty)
-            adverse_premium = (vpin - 0.5) * 0.0005
-            total_friction_pct += adverse_premium
-            log.info(f"Adverse Selection Active: High Toxicity (VPIN={vpin:.2f}) | Fill Ratio cut to {fill_ratio*100:.1f}% | Added {adverse_premium*10000:.1f} bps toxic premium.")
-            
-        final_filled_qty = float(qty) * fill_ratio
+        final_filled_qty = float(order_qty) * fill_ratio
         
-        alpaca_fill = float(alpaca_order.filled_avg_price) if (alpaca_order and alpaca_order.filled_avg_price) else price_estimate
+        broker_fill = result.filled_avg_price if result.filled_avg_price > 0 else price_estimate
         if action == 'BUY':
-            fill_price = alpaca_fill * (1.0 + total_friction_pct)
+            fill_price = broker_fill * (1.0 + total_friction_pct)
         else:
-            fill_price = alpaca_fill * (1.0 - total_friction_pct)
+            fill_price = broker_fill * (1.0 - total_friction_pct)
             
         latency_ms = (time.time() - start_time) * 1000
+        
+        # Include broker commission
+        commission = result.commission
         
         analytics.record_fill(
             ticker=ticker,
@@ -234,12 +230,11 @@ def on_order_approved(event: Event):
             fill_price=fill_price,
             qty=final_filled_qty,
             latency_ms=latency_ms,
-            commission=0.0  # Alpaca is commission-free
+            commission=commission
         )
-        if fill_ratio < 1.0:
-            log.info(f"EXECUTED PARTIALLY (Adverse Selection): {action} {final_filled_qty:.1f}x {ticker} (of {qty}x requested)")
-        else:
-            log.info(f"EXECUTED FULLY: {action} {qty}x {ticker}")
+        
+        log.info(f"EXECUTED: {action} {order_qty}x {ticker} via {broker.name} "
+                 f"(fill=${fill_price:.2f}, commission=${commission:.2f})")
         
         # --- DB AUDIT: EXECUTION STATE & SLIPPAGE SYNCHRONIZATION ---
         atr_row = None
@@ -247,7 +242,7 @@ def on_order_approved(event: Event):
             conn = _get_db_conn()
             cursor = conn.cursor()
             
-            # Check if this is a closing fill (marked as 'CLOSING' by risk_manager)
+            # Check if this is a closing fill
             if action == 'BUY':
                 cursor.execute(
                     "SELECT id, entry_price, entry_date, quantity FROM trade_history "
@@ -265,7 +260,6 @@ def on_order_approved(event: Event):
             if closing_row:
                 trade_id, entry_price, entry_date_str, entry_qty = closing_row
                 
-                # Realized PnL and PnL% calculations
                 if action == 'SELL':  # Long Close
                     pnl = (fill_price - entry_price) * final_filled_qty
                     pnl_pct = (fill_price - entry_price) / (entry_price if entry_price > 0 else 1.0)
@@ -291,7 +285,7 @@ def on_order_approved(event: Event):
                         status = 'CLOSED'
                     WHERE id = ?
                 ''', (fill_price, datetime.date.today().isoformat(), pnl, pnl_pct, holding_days, trade_id))
-                log.info(f"DB AUDIT: Closed trade {trade_id} for {ticker} | Entry price: ${entry_price:.2f} | Exit price: ${fill_price:.2f} | Realized PnL: ${pnl:.2f} ({pnl_pct*100:.2f}%)")
+                log.info(f"DB AUDIT: Closed trade {trade_id} for {ticker} | PnL: ${pnl:.2f} ({pnl_pct*100:.2f}%)")
             else:
                 # Opening fill: update the ideal quantity and estimated entry price
                 cursor.execute('''
@@ -308,41 +302,12 @@ def on_order_approved(event: Event):
                             quantity = ?
                         WHERE id = ?
                     ''', (fill_price, final_filled_qty, trade_id))
-                    log.info(f"DB AUDIT: Updated opening trade {trade_id} for {ticker} | Actual Entry Price: ${fill_price:.2f} | Actual Qty: {final_filled_qty:.4f}")
-            
-            # Fetch ATR-14 for trailing stop
-            cursor.execute('SELECT atr14 FROM market_data WHERE ticker = ?', (ticker,))
-            atr_row = cursor.fetchone()
+                    log.info(f"DB AUDIT: Updated opening trade {trade_id} for {ticker} | Entry: ${fill_price:.2f}")
             
             conn.commit()
         except Exception as db_err:
             log.error(f"FAILED to audit database execution fills for {ticker}: {db_err}")
             atr_row = None
-        
-        if atr_row and atr_row[0] and atr_row[0] > 0:
-            atr = float(atr_row[0])
-            
-            if action == 'BUY':
-                stop_limit_price = round(fill_price - (atr * 2.5), 2)
-                side_stop = OrderSide.SELL
-            else:  # Short entry (SELL) -> protective cover stop (BUY)
-                stop_limit_price = round(fill_price + (atr * 2.5), 2)
-                side_stop = OrderSide.BUY
-                
-            if stop_limit_price > 0:
-                try:
-                    stop_order = trading_client.submit_order(
-                        order_data=LimitOrderRequest(
-                            symbol=ticker,
-                            qty=round(final_filled_qty, 4),
-                            side=side_stop,
-                            time_in_force=TimeInForce.DAY,
-                            limit_price=stop_limit_price
-                        )
-                    )
-                    log.info(f"  Protective Limit Stop attached: {side_stop.name} {ticker} @ ${stop_limit_price:.2f} (ATR-2.5x)")
-                except Exception as e:
-                    log.warning(f"  Failed to attach Limit Stop: {e}")
 
         # Publish Filled Event
         event_bus.publish(Topics.ORDER_FILLED, Event(
@@ -350,19 +315,22 @@ def on_order_approved(event: Event):
             data={
                 "ticker": ticker,
                 "action": action,
-                "qty": qty,
+                "qty": order_qty,
                 "fill_price": fill_price,
-                "latency_ms": latency_ms
+                "latency_ms": latency_ms,
+                "broker": broker.name,
+                "commission": commission
             }
         ))
         
-        log_trade(ticker, action, qty, price_estimate, str(alpaca_order.id if alpaca_order else "SIM_ID"))
+        log_trade(ticker, action, order_qty, price_estimate,
+                  result.order_id or "SIM_ID", broker.name, commission)
         
     except Exception as e:
         log.error(f"FAILED to execute {action} for {ticker}: {e}")
 
 def run_execution_engine():
-    log.info("Starting Execution Engine (Event-Driven)...")
+    log.info(f"Starting Execution Engine (Broker: {broker.name if broker else 'NONE'})...")
     init_logger()
     event_bus.subscribe(Topics.ORDER_APPROVED, on_order_approved)
     

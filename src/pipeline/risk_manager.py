@@ -1,20 +1,30 @@
 """
-Risk Manager — Centralized Risk Authority (Optimized)
-=====================================================
+Risk Manager — Centralized Risk Authority (Broker-Agnostic V2)
+===============================================================
 Subscribes to SIGNAL_GENERATED.
 Evaluates portfolio VaR, Kelly sizing, circuit breakers, and correlation.
 Features in-memory price history caching to reduce latency from ~2000ms to <1ms.
+Now uses the unified BaseBroker interface for broker-agnostic execution.
 """
 import sqlite3
 import time
 import datetime
 import os
+import sys
 import json
 import threading
 import numpy as np
 from dotenv import load_dotenv
 
 from logger import get_logger
+from paths import DB_PATH, ENV_FILE
+
+# Add brokers to path
+_BROKERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'brokers')
+if _BROKERS_DIR not in sys.path:
+    sys.path.insert(0, _BROKERS_DIR)
+
+from broker_factory import get_broker
 
 # Event Bus and Domain Models
 from event_bus import get_bus, Event, Topics
@@ -27,32 +37,34 @@ from alpha_engine  import get_engine    as _get_alpha_engine
 
 log = get_logger("Risk Manager")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.db')
-
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env'))
-API_KEY = os.getenv('ALPACA_API_KEY')
-SECRET_KEY = os.getenv('ALPACA_SECRET_KEY')
+load_dotenv(ENV_FILE)
 
 MIN_ALLOCATION_PCT = 0.02
 MAX_ALLOCATION_PCT = 0.15
 
 CIRCUIT_BREAKER_PCT = 0.04
+
+class PositionProxy:
+    """Wrapper to standardize broker positions for risk checks."""
+    __slots__ = ('qty', 'market_value')
+    def __init__(self, qty: float, market_value: float = 0.0):
+        self.qty = qty
+        self.market_value = market_value
 MAX_DAILY_TRADES = 20
 
-from alpaca.trading.client import TradingClient
-
 event_bus = get_bus()
+
+# Initialize broker via factory
+broker = None
 try:
-    trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+    broker = get_broker(auto_connect=True)
+    log.info(f"Risk Manager using broker: {broker.name}")
 except Exception as e:
-    trading_client = None
-    log.warning(f"Could not connect to Alpaca in RiskManager: {e}")
+    log.warning(f"Could not initialize broker in RiskManager: {e}")
 
-risk_gate = RiskGate(DB_PATH, trading_client=trading_client)
+risk_gate = RiskGate(DB_PATH, trading_client=None)
 
-# In-memory daily price history cache & lock for thread safety (latency optimization)
-_PRICE_CACHE = {}
-_CACHE_LOCK = threading.Lock()
+# Thread-local database connection pool
 
 _local_db = threading.local()
 
@@ -67,41 +79,7 @@ def _get_db_conn():
             pass
     return _local_db.conn
 
-def _initialize_price_cache():
-    """Asynchronously bulk pre-fetches price history to warm correlation cache."""
-    log.info("Prefetching close prices for watchlist to warm correlation cache...")
-    try:
-        conn = _get_db_conn()
-        c = conn.cursor()
-        c.execute('SELECT ticker FROM daily_watchlist')
-        watchlist = [r[0] for r in c.fetchall()]
-        
-        if not watchlist:
-            log.info("No daily watchlist found. Cache prefetch skipped.")
-            return
-            
-        import yfinance as yf
-        import pandas as pd
-        
-        df = yf.download(watchlist, period='30d', interval='1d', progress=False)
-        
-        if isinstance(df.columns, pd.MultiIndex) and 'Close' in df.columns:
-            close_df = df['Close']
-        elif 'Close' in df.columns:
-            close_df = df['Close']
-        else:
-            close_df = df
-            
-        with _CACHE_LOCK:
-            for ticker in watchlist:
-                if len(watchlist) == 1 and isinstance(close_df, pd.Series):
-                    _PRICE_CACHE[ticker] = close_df.dropna()
-                elif ticker in close_df.columns:
-                    _PRICE_CACHE[ticker] = close_df[ticker].dropna()
-                    
-        log.info(f"Price cache warmed successfully with {len(_PRICE_CACHE)} tickers.")
-    except Exception as e:
-        log.warning(f"Failed to prefetch price history on boot: {e}")
+# Cache removed in favor of offline correlation database seeding (sub-millisecond optimization)
 
 # ========== RISK CALCULATIONS ==========
 
@@ -131,67 +109,24 @@ def check_correlation(cursor, new_ticker, existing_tickers):
         return 0.0
     
     try:
-        import yfinance as yf
-        import pandas as pd
-        
         t0 = time.time()
-        
-        # 1. Identify missing tickers
-        missing = []
-        with _CACHE_LOCK:
-            for t in [new_ticker] + existing_tickers:
-                if t not in _PRICE_CACHE or _PRICE_CACHE[t].empty:
-                    missing.append(t)
-        
-        # 2. Fetch missing tickers asynchronously as fallback to avoid blocking the hot path
-        if missing:
-            log.info(f"Cache miss for {missing}. Spawning background fetch to warm correlation cache...")
-            def bg_fetch():
-                try:
-                    df = yf.download(missing, period='30d', interval='1d', progress=False)
-                    if isinstance(df.columns, pd.MultiIndex) and 'Close' in df.columns:
-                        close_df = df['Close']
-                    elif 'Close' in df.columns:
-                        close_df = df['Close']
-                    else:
-                        close_df = df
-                        
-                    with _CACHE_LOCK:
-                        for t in missing:
-                            if len(missing) == 1 and isinstance(close_df, pd.Series):
-                                _PRICE_CACHE[t] = close_df.dropna()
-                            elif t in close_df.columns:
-                                _PRICE_CACHE[t] = close_df[t].dropna()
-                    log.info(f"Background correlation cache warmed for {missing}.")
-                except Exception as fe:
-                    log.warning(f"Background correlation cache warm failed: {fe}")
-            
-            threading.Thread(target=bg_fetch, daemon=True, name="RiskManager-BgFetch").start()
-                
-        # 3. Calculate correlation locally using price cache
-        prices = {}
-        with _CACHE_LOCK:
-            for t in [new_ticker] + existing_tickers:
-                if t in _PRICE_CACHE and not _PRICE_CACHE[t].empty:
-                    prices[t] = _PRICE_CACHE[t]
-                    
-        if new_ticker not in prices or len(prices) < 2:
-            return 0.0
-            
-        df = pd.DataFrame(prices)
-        returns = df.pct_change().dropna()
-        corr_matrix = returns.corr()
-        
         correlations = []
+        
         for exist in existing_tickers:
-            if exist in corr_matrix.columns:
-                corr = corr_matrix.loc[new_ticker, exist]
-                if pd.notna(corr):
-                    correlations.append(corr)
-                    
+            # Sort query targets alphabetically (stored as ticker_a < ticker_b in DB)
+            ta, tb = sorted([new_ticker, exist])
+            cursor.execute(
+                'SELECT correlation FROM watchlist_correlation WHERE ticker_a = ? AND ticker_b = ?',
+                (ta, tb)
+            )
+            row = cursor.fetchone()
+            if row is not None:
+                correlations.append(float(row[0]))
+                
         elapsed = (time.time() - t0) * 1000
-        log.info(f"⚡ [Risk Manager Cache] Correlation computed locally for {new_ticker} vs {existing_tickers} in {elapsed:.2f}ms.")
-        return np.mean(correlations) if correlations else 0.0
+        avg_corr = float(np.mean(correlations)) if correlations else 0.0
+        log.info(f"⚡ [Risk Manager DB] Correlation queried for {new_ticker} vs {existing_tickers} in {elapsed:.2f}ms (Result={avg_corr:.2f}).")
+        return avg_corr
         
     except Exception as e:
         log.warning(f"Correlation check failed: {e}")
@@ -259,30 +194,26 @@ def on_signal_generated(event: Event):
         conn = _get_db_conn()
         cursor = conn.cursor()
 
-        # Update Portfolio State via Alpaca
+        # Update Portfolio State via Broker Abstraction
         portfolio_value = 100000.0  # fallback simulated value
         buying_power = 100000.0  # fallback simulated value
         positions = {}
-        if trading_client is not None:
+        if broker is not None and broker.is_connected():
             try:
-                account = trading_client.get_account()
-                portfolio_value = float(account.portfolio_value)
-                buying_power = float(account.buying_power)
+                account = broker.get_account()
+                portfolio_value = account.portfolio_value
+                buying_power = account.buying_power
                 
-                positions_list = trading_client.get_all_positions()
-                positions = {p.symbol: p for p in positions_list}
+                broker_positions = broker.get_positions()
+                positions = {symbol: PositionProxy(bp.qty, bp.market_value) for symbol, bp in broker_positions.items()}
             except Exception as e:
-                log.error(f"Failed to fetch Alpaca account: {e}. Using simulated defaults.")
+                log.error(f"Failed to fetch broker account: {e}. Using simulated defaults.")
         else:
             # Under simulation / backtesting mode, get current positions from DB trade_history
             try:
                 cursor.execute("SELECT ticker FROM trade_history WHERE status = 'OPEN'")
                 open_tickers = [r[0] for r in cursor.fetchall()]
-                # Represent open positions minimally
-                class SimulatedPos:
-                    def __init__(self, qty):
-                        self.qty = qty
-                positions = {t: SimulatedPos(100.0) for t in open_tickers}
+                positions = {t: PositionProxy(100.0, 0.0) for t in open_tickers}
             except Exception:
                 pass
 
@@ -344,20 +275,28 @@ def on_signal_generated(event: Event):
                     log.warning(f"REJECTED BUY {ticker}: Too correlated (avg={avg_corr:.2f}).")
                     return
                 
-                # V13: Snapshot and ADV already fetched above in consolidated query
-                alpha_out = _get_alpha_engine().evaluate(ticker, snapshot)
+                # Check if it's a news breakthrough signal
+                if strategy == 'news_breakthrough_momentum':
+                    alloc_pct = float(event.data.get('kelly_pct', 0.02))
+                    qty = (portfolio_value * alloc_pct) / price
+                    sizing = {'uncertainty_haircut': 0.0, 'adv_capped': False}
+                    alpha_out = None
+                    log.info(f"Bypassing Bayesian sizing for news momentum buy. Allocated {alloc_pct*100:.1f}%")
+                else:
+                    # V13: Snapshot and ADV already fetched above in consolidated query
+                    alpha_out = _get_alpha_engine().evaluate(ticker, snapshot)
 
-                # Bayesian size
-                sizing = _get_portfolio().size(
-                    alpha_out       = alpha_out,
-                    price           = price,
-                    portfolio_value = portfolio_value,
-                    adv             = adv,
-                )
-                alloc_pct = sizing['alloc_pct']
-                qty       = sizing['qty']
+                    # Bayesian size
+                    sizing = _get_portfolio().size(
+                        alpha_out       = alpha_out,
+                        price           = price,
+                        portfolio_value = portfolio_value,
+                        adv             = adv,
+                    )
+                    alloc_pct = sizing['alloc_pct']
+                    qty       = sizing['qty']
 
-                if sizing['adv_capped']:
+                if sizing.get('adv_capped', False):
                     log.warning(
                         f"⚠️ ADV cap active for {ticker}: qty={qty:.4f} "
                         f"(ADV={adv:,.0f}, haircut={sizing['uncertainty_haircut']:.2f})"
@@ -379,9 +318,9 @@ def on_signal_generated(event: Event):
                         approved_action = 'BUY'
                         approved_qty    = qty
                         log.info(
-                            f"Bayesian sizing: {strategy} "
-                            f"E[r]={sizing['blended_er']:+.3f} "
-                            f"Haircut={sizing['uncertainty_haircut']:.2f} "
+                            f"Sizing approved for {strategy}: "
+                            f"E[r]={sizing.get('blended_er', 0.0):+.3f} "
+                            f"Haircut={sizing.get('uncertainty_haircut', 0.0):.2f} "
                             f"Alloc={alloc_pct*100:.1f}% = {qty:.4f} shares"
                         )
                     else:
@@ -401,24 +340,31 @@ def on_signal_generated(event: Event):
                 else:
                     log.info(f"REJECTED SELL {ticker}: Already short.")
             else:
-                if strategy == 'factor_microstructure_flow':
+                if strategy == 'factor_microstructure_flow' or strategy == 'news_breakthrough_momentum':
                     avg_corr = check_correlation(cursor, ticker, list(positions.keys()))
                     if avg_corr > 0.7:
                         log.warning(f"REJECTED SHORT {ticker}: Too correlated (avg={avg_corr:.2f}).")
                         return
                     
-                    # V13: Snapshot and ADV already fetched above in consolidated query
-                    alpha_out = _get_alpha_engine().evaluate(ticker, snapshot)
+                    if strategy == 'news_breakthrough_momentum':
+                        alloc_pct = float(event.data.get('kelly_pct', 0.02))
+                        qty = (portfolio_value * alloc_pct) / price
+                        sizing = {'uncertainty_haircut': 0.0}
+                        alpha_out = None
+                        log.info(f"Bypassing Bayesian sizing for news momentum short. Allocated {alloc_pct*100:.1f}%")
+                    else:
+                        # V13: Snapshot and ADV already fetched above in consolidated query
+                        alpha_out = _get_alpha_engine().evaluate(ticker, snapshot)
 
-                    # Bayesian size
-                    sizing = _get_portfolio().size(
-                        alpha_out       = alpha_out,
-                        price           = price,
-                        portfolio_value = portfolio_value,
-                        adv             = adv,
-                    )
-                    alloc_pct = sizing['alloc_pct']
-                    qty       = sizing['qty']
+                        # Bayesian size
+                        sizing = _get_portfolio().size(
+                            alpha_out       = alpha_out,
+                            price           = price,
+                            portfolio_value = portfolio_value,
+                            adv             = adv,
+                        )
+                        alloc_pct = sizing['alloc_pct']
+                        qty       = sizing['qty']
 
                     if qty > 0 and buying_power > (qty * price):
                         approved_action = 'SELL'
@@ -426,7 +372,7 @@ def on_signal_generated(event: Event):
                         is_short_open = True
                         log.info(
                             f"Approved SHORT sale for {ticker}: {qty} shares "
-                            f"(Bayesian alloc: {alloc_pct*100:.1f}%, haircut={sizing['uncertainty_haircut']:.2f})"
+                            f"(Bayesian alloc: {alloc_pct*100:.1f}%, haircut={sizing.get('uncertainty_haircut', 0.0):.2f})"
                         )
                     else:
                         log.warning(f"REJECTED SHORT {ticker}: Insufficient buying power.")
@@ -496,13 +442,76 @@ def on_signal_generated(event: Event):
     except Exception as e:
         log.error(f"Error in Risk Event Handler: {e}")
 
+def on_news_sentiment_alert(event: Event):
+    """
+    Handles breaking news sentiment alerts.
+    Validates sentiment with recent volume spikes (volume_ratio > 1.5).
+    """
+    try:
+        data = event.data
+        ticker = data.get("ticker")
+        sentiment_score = float(data.get("sentiment_score", 0.0))
+        headline = data.get("headline", "")
+        source = data.get("source", "")
+        
+        # Use thread-local DB connection (routes through DuckDB/Postgres adapter)
+        conn = _get_db_conn()
+        cursor = conn.cursor()
+        
+        # Fetch current volume_ratio and close_price
+        cursor.execute("SELECT volume_ratio, close_price FROM market_data WHERE ticker=?", (ticker,))
+        row = cursor.fetchone()
+        if not row:
+            log.warning(f"No market data found for {ticker}. Skipping sentiment trade.")
+            return
+            
+        volume_ratio = float(row[0] or 1.0)
+        price = float(row[1])
+        
+        # Retrieve portfolio value for sizing
+        portfolio_value = 100000.0
+        if broker is not None and broker.is_connected():
+            try:
+                account = broker.get_account()
+                portfolio_value = float(account.portfolio_value)
+            except Exception:
+                pass
+        
+        # Validate using:
+        # 1. High absolute sentiment (e.g. >= 0.5)
+        # 2. Volume Ratio >= 1.5 (showing volume spike/money influx)
+        if abs(sentiment_score) >= 0.5 and volume_ratio >= 1.5:
+            action = 'BUY' if sentiment_score > 0 else 'SELL'
+            
+            # Sizing: 2% of portfolio * sentiment multiplier
+            alloc_pct = 0.02 * min(1.0, abs(sentiment_score))
+            
+            log.info(f"📰 NEWS BREAKTHROUGH VALIDATED for {ticker}! Headline: '{headline[:50]}' | Volume Ratio: {volume_ratio:.2f}x | Action: {action}")
+            
+            # Create order event and publish to event bus for Signal Generated
+            # (which will be processed by on_signal_generated risk rules)
+            event_bus.publish(Topics.SIGNAL_GENERATED, Event(
+                source="news_breakthrough_engine",
+                data={
+                    "ticker": ticker,
+                    "signal_type": action,
+                    "confidence": abs(sentiment_score),
+                    "target_strategy": "news_breakthrough_momentum",
+                    "price_estimate": price,
+                    "kelly_pct": alloc_pct
+                }
+            ))
+        else:
+            log.debug(f"News sentiment alert discarded for {ticker} (sentiment={sentiment_score:.2f}, vol_ratio={volume_ratio:.2f}x)")
+            
+    except Exception as e:
+        log.error(f"Error in on_news_sentiment_alert handler: {e}")
+
 def run_risk_manager():
     log.info("Starting Centralized Risk Manager (Event-Driven)...")
     
-    # Asynchronously initialize/warm the price history cache for correlations
-    threading.Thread(target=_initialize_price_cache, name="RiskManager-WarmCache", daemon=True).start()
-    
     event_bus.subscribe(Topics.SIGNAL_GENERATED, on_signal_generated)
+    event_bus.subscribe(Topics.NEWS_SENTIMENT_ALERT, on_news_sentiment_alert)
     
     try:
         while True:

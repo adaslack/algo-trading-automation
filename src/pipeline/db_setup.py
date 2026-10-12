@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DUCKDB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.duckdb')
+from paths import DUCKDB_PATH, DB_PATH
 
 def setup_database_postgres():
     """Sets up the V3 Institutional schema inside the PostgreSQL database container."""
@@ -108,10 +108,11 @@ def setup_database_postgres():
         ''')
 
         strategies_defaults = [
-            ('factor_mean_reversion', 0.25),
-            ('factor_latent_alpha', 0.25),
-            ('factor_microstructure_flow', 0.25),
-            ('factor_unified_expected_return', 0.25),
+            ('factor_mean_reversion', 0.20),
+            ('factor_latent_alpha', 0.20),
+            ('factor_microstructure_flow', 0.20),
+            ('factor_unified_expected_return', 0.20),
+            ('news_breakthrough_momentum', 0.20),
         ]
         
         for strat, w in strategies_defaults:
@@ -146,7 +147,18 @@ def setup_database_postgres():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_watchlist (
                 ticker VARCHAR(20) PRIMARY KEY,
-                sector VARCHAR(100)
+                sector VARCHAR(100),
+                company_name VARCHAR(200)
+            )
+        ''')
+
+        # 6b. WATCHLIST CORRELATION
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS watchlist_correlation (
+                ticker_a VARCHAR(20) NOT NULL,
+                ticker_b VARCHAR(20) NOT NULL,
+                correlation DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (ticker_a, ticker_b)
             )
         ''')
 
@@ -345,7 +357,7 @@ def setup_database_sqlite():
     cursor_duck = _DuckDBCursorWrapper(conn_duck.cursor())
 
     # 2. SQLite3 Setup
-    sqlite_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.db')
+    sqlite_path = DB_PATH
     print(f"Initializing standard SQLite3 Database at: {sqlite_path}")
     os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
     conn_sql = sqlite3.connect(sqlite_path)
@@ -445,10 +457,11 @@ def setup_database_sqlite():
     ''')
 
     strategies_defaults = [
-        ('factor_mean_reversion', 0.25),
-        ('factor_latent_alpha', 0.25),
-        ('factor_microstructure_flow', 0.25),
-        ('factor_unified_expected_return', 0.25),
+        ('factor_mean_reversion', 0.20),
+        ('factor_latent_alpha', 0.20),
+        ('factor_microstructure_flow', 0.20),
+        ('factor_unified_expected_return', 0.20),
+        ('news_breakthrough_momentum', 0.20),
     ]
     for strat, w in strategies_defaults:
         cursor.execute("INSERT OR IGNORE INTO strategy_weights (strategy, weight) VALUES (?, ?)", (strat, w))
@@ -474,7 +487,18 @@ def setup_database_sqlite():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS daily_watchlist (
             ticker TEXT PRIMARY KEY,
-            sector TEXT
+            sector TEXT,
+            company_name TEXT
+        )
+    ''')
+
+    # 6b. Watchlist Correlation
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watchlist_correlation (
+            ticker_a TEXT NOT NULL,
+            ticker_b TEXT NOT NULL,
+            correlation REAL NOT NULL,
+            PRIMARY KEY (ticker_a, ticker_b)
         )
     ''')
 
@@ -652,6 +676,21 @@ def setup_database_sqlite():
         except Exception as e:
             if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                 print(f"DuckDB migration warning on {col}: {e}")
+
+    # Migration: add company_name column to daily_watchlist
+    # SQLite
+    try:
+        conn_sql.execute("ALTER TABLE daily_watchlist ADD COLUMN company_name TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+            print(f"SQLite watchlist migration warning: {e}")
+            
+    # DuckDB
+    try:
+        conn_duck.execute("ALTER TABLE daily_watchlist ADD COLUMN company_name TEXT")
+    except Exception as e:
+        if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+            print(f"DuckDB watchlist migration warning: {e}")
 
     conn.commit()
     conn.close()

@@ -102,12 +102,12 @@ class Order(BaseModel):
 
 
 class Execution(BaseModel):
-    """A filled execution returned from Alpaca."""
+    """A filled execution returned from the broker."""
     ticker: str
     action: str
     qty: float
     fill_price: float
-    alpaca_order_id: str
+    broker_order_id: str
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

@@ -16,15 +16,16 @@ from portfolio import get_portfolio as _get_portfolio
 
 log = get_logger("Meta Learning")
 
-DB_PATH     = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'data', 'trading_brain.db')
-TRADES_FILE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'pipeline_trades.csv'))
+from paths import DB_PATH, TRADES_CSV
+TRADES_FILE = TRADES_CSV
 POLL_INTERVAL = 60
 
 ALL_STRATEGIES = [
     'factor_mean_reversion',
     'factor_latent_alpha',
     'factor_microstructure_flow',
-    'factor_unified_expected_return'
+    'factor_unified_expected_return',
+    'news_breakthrough_momentum'
 ]
 
 def update_strategy_metrics(cursor):

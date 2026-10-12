@@ -1,5 +1,6 @@
 # Python environment and cache
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -17,3 +18,22 @@ paper_trades.csv
 # Local configuration files
 .env
 config/.env
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Generated dumps and reports
+codebase_dump*.md
+reports/
